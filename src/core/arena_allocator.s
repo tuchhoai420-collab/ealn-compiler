@@ -2,9 +2,12 @@
 .global reset_arena
 .global init_arena
 
-.equ ARENA_SIZE, 0x40000000   // 1GB: Zero-Pause masivo original
+// 64 MB: suficiente para tokens + AST + buffer de opcodes en RPi / desktop
+// (el diseño original de 1GB se puede restaurar fácilmente cambiando este valor)
+.equ ARENA_SIZE, 0x4000000
 
 .section .bss
+    .align 3
     arena_base:   .skip 8
     arena_offset: .skip 8
 
@@ -37,6 +40,7 @@ alloc_arena:
     ldr     x2, =arena_offset
     ldr     x3, [x2]
     add     x4, x1, x3
+    // alinear a 16 bytes
     add     x0, x0, #15
     and     x0, x0, #-16
     add     x3, x3, x0

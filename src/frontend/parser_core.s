@@ -28,10 +28,6 @@
 
 .section .text
 
-// ─────────────────────────────────────────────────────────────
-// parsear_numero_token
-// x0 = start, x1 = len → x0 = valor
-// ─────────────────────────────────────────────────────────────
 parsear_numero_token:
     ldr     x2, =fuente_ptr
     ldr     x2, [x2]
@@ -47,9 +43,6 @@ parsear_numero_token:
     b       1b
 2:  ret
 
-// ─────────────────────────────────────────────────────────────
-// peek_type → w0   (usa x19=base tokens, x20=count)
-// ─────────────────────────────────────────────────────────────
 peek_type:
     ldr     x0, =expr_tok_idx
     ldr     x0, [x0]
@@ -80,111 +73,99 @@ current_number_value:
     mov     x1, x2
     b       parsear_numero_token
 
-// ─────────────────────────────────────────────────────────────
-// parse_factor → x0
-// ─────────────────────────────────────────────────────────────
 parse_factor:
-    stp     x30, xzr, [sp, #-16]!
+    str     x30, [sp, #-16]!
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
-    b.eq    .Lnum
+    b.eq    10f
     cmp     w0, #TOKEN_LPAREN
-    b.eq    .Lparen
+    b.eq    20f
     cmp     w0, #TOKEN_MINUS
-    b.eq    .Lneg
+    b.eq    30f
     mov     x0, #0
-    ldp     x30, xzr, [sp], #16
+    ldr     x30, [sp], #16
     ret
-.Lnum:
-    bl      current_number_value
+
+10: bl      current_number_value
     mov     x1, x0
     bl      advance_token
     mov     x0, x1
-    ldp     x30, xzr, [sp], #16
+    ldr     x30, [sp], #16
     ret
-.Lparen:
-    bl      advance_token
+
+20: bl      advance_token
     bl      parse_expr
     mov     x1, x0
     bl      peek_type
     cmp     w0, #TOKEN_RPAREN
-    b.ne    1f
+    b.ne    21f
     bl      advance_token
-1:  mov     x0, x1
-    ldp     x30, xzr, [sp], #16
-    ret
-.Lneg:
-    bl      advance_token
-    bl      parse_factor
-    neg     x0, x0
-    ldp     x30, xzr, [sp], #16
+21: mov     x0, x1
+    ldr     x30, [sp], #16
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_term → x0   (* /)
-// ─────────────────────────────────────────────────────────────
+30: bl      advance_token
+    bl      parse_factor
+    neg     x0, x0
+    ldr     x30, [sp], #16
+    ret
+
 parse_term:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_factor
     str     x0, [sp, #16]
-.Lterm_loop:
-    bl      peek_type
+
+40: bl      peek_type
     cmp     w0, #TOKEN_STAR
-    b.eq    .Lmul
+    b.eq    41f
     cmp     w0, #TOKEN_SLASH
-    b.eq    .Ldiv
+    b.eq    42f
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-.Lmul:
-    bl      advance_token
+
+41: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     mul     x0, x1, x0
     str     x0, [sp, #16]
-    b       .Lterm_loop
-.Ldiv:
-    bl      advance_token
+    b       40b
+
+42: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     sdiv    x0, x1, x0
     str     x0, [sp, #16]
-    b       .Lterm_loop
+    b       40b
 
-// ─────────────────────────────────────────────────────────────
-// parse_expr → x0   (+ -)
-// ─────────────────────────────────────────────────────────────
 parse_expr:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_term
     str     x0, [sp, #16]
-.Lexpr_loop:
-    bl      peek_type
+
+50: bl      peek_type
     cmp     w0, #TOKEN_PLUS
-    b.eq    .Ladd
+    b.eq    51f
     cmp     w0, #TOKEN_MINUS
-    b.eq    .Lsub
+    b.eq    52f
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-.Ladd:
-    bl      advance_token
+
+51: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     add     x0, x1, x0
     str     x0, [sp, #16]
-    b       .Lexpr_loop
-.Lsub:
-    bl      advance_token
+    b       50b
+
+52: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     sub     x0, x1, x0
     str     x0, [sp, #16]
-    b       .Lexpr_loop
+    b       50b
 
-// ─────────────────────────────────────────────────────────────
-// iniciar_parser
-// ─────────────────────────────────────────────────────────────
 iniciar_parser:
     stp     x19, x20, [sp, #-80]!
     stp     x21, x22, [sp, #16]
@@ -228,7 +209,6 @@ parser_loop:
 es_decl:
     mov     w27, w24
 
-    // IDENT
     add     x23, x23, #1
     cmp     x23, x20
     b.ge    parser_fin
@@ -243,7 +223,6 @@ es_decl:
     mov     w9, w25
     mov     w10, w26
 
-    // '='
     add     x23, x23, #1
     cmp     x23, x20
     b.ge    parser_fin
@@ -254,7 +233,6 @@ es_decl:
     cmp     w24, #TOKEN_ASSIGN
     b.ne    error_sintaxis
 
-    // expresión con folding
     add     x23, x23, #1
     ldr     x0, =expr_tok_idx
     str     x23, [x0]
@@ -263,7 +241,6 @@ es_decl:
     ldr     x0, =expr_tok_idx
     ldr     x23, [x0]
 
-    // ';' opcional
     cmp     x23, x20
     b.ge    crear_nodo
     mov     x0, x23

@@ -1,2 +1,2 @@
-sea limite = 100;
-fijo gravedad = 9;
+sea limite = 10 + 3 * 4;
+fijo gravedad = 100 - 20 / 2;

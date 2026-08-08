@@ -114,15 +114,21 @@ emitir_cmp_zero:
     str     w3, [x20], #4
     ret
 
-emitir_b_placeholder:
-    cmp     w0, #0
-    b.ne    1f
+// Emite B con offset ya calculado (delta en instrucciones, signed)
+// w0 = delta (número de instrucciones a saltar)
+emitir_b_inmediato:
+    and     w0, w0, #0x03FFFFFF
     movz    w1, #0x0000
     movk    w1, #0x1400, lsl #16
-    b       2f
-1:  movz    w1, #0x0000
+    orr     w1, w1, w0
+    str     w1, [x20], #4
+    ret
+
+// Emite placeholder de B.EQ (solo para forward)
+emitir_beq_placeholder:
+    movz    w1, #0x0000
     movk    w1, #0x5400, lsl #16
-2:  str     w1, [x20], #4
+    str     w1, [x20], #4
     ret
 
 registrar_label:
@@ -139,7 +145,8 @@ registrar_label:
     str     x2, [x1]
 9:  ret
 
-registrar_parche:
+// Solo para saltos hacia adelante (JZ)
+registrar_parche_forward:
     ldr     x2, =patch_count
     ldr     x3, [x2]
     cmp     x3, #MAX_PATCHES
@@ -150,8 +157,8 @@ registrar_parche:
     ldr     x6, =patch_list
     add     x6, x6, x3, lsl #4
     str     x5, [x6]
-    str     w0, [x6, #8]
-    str     w1, [x6, #12]
+    str     w0, [x6, #8]            // label_id
+    str     wzr, [x6, #12]          // tipo 0 = B.EQ
     add     x3, x3, #1
     str     x3, [x2]
 9:  ret
@@ -172,37 +179,21 @@ parch_loop:
 
     ldr     x1, =patch_list
     add     x1, x1, x20, lsl #4
-    ldr     x2, [x1]                // offset de la instrucción
+    ldr     x2, [x1]                // offset
     ldr     w3, [x1, #8]            // label_id
-    ldr     w4, [x1, #12]           // tipo
 
     ldr     x5, =label_pos
     and     x3, x3, #0x3F
     ldr     x6, [x5, x3, lsl #3]    // pos_label
 
-    // delta en bytes = pos_label - (offset + 4)
     add     x7, x2, #4
     sub     x8, x6, x7
-    // delta en instrucciones (signed)
-    asr     x8, x8, #2
+    asr     x8, x8, #2              // delta en instrucciones
 
     ldr     x9, =opcode_buffer
     add     x9, x9, x2
 
-    cmp     w4, #0
-    b.ne    parch_cond
-
-    // B incondicional: imm26 (signed, 26 bits)
-    // Tomamos los 26 bits bajos del valor signed
-    and     w8, w8, #0x03FFFFFF
-    movz    w10, #0x0000
-    movk    w10, #0x1400, lsl #16
-    orr     w10, w10, w8
-    str     w10, [x9]
-    b       parch_next
-
-parch_cond:
-    // B.EQ: imm19 (signed) en bits 23:5
+    // Solo B.EQ
     and     w8, w8, #0x7FFFF
     lsl     w8, w8, #5
     movz    w10, #0x0000
@@ -210,7 +201,6 @@ parch_cond:
     orr     w10, w10, w8
     str     w10, [x9]
 
-parch_next:
     add     x20, x20, #1
     b       parch_loop
 
@@ -339,7 +329,6 @@ do_sub:
     b       ir_next
 
 do_cmp:
-    // Forzado a x0 para el caso de una sola variable
     mov     w1, #0
     bl      emitir_cmp_zero
     b       ir_next
@@ -350,19 +339,26 @@ do_label:
     b       ir_next
 
 do_jmp:
-    mov     w0, #0
-    bl      emitir_b_placeholder
-    mov     w0, w5
-    mov     w1, #0
-    bl      registrar_parche
+    // Salto hacia atrás: el label YA está registrado
+    // Calculamos el delta ahora y emitimos la B correcta
+    and     x5, x5, #0x3F           // label_id
+    ldr     x1, =label_pos
+    ldr     x2, [x1, x5, lsl #3]    // pos_label (offset desde buffer)
+
+    ldr     x3, =opcode_buffer
+    sub     x4, x20, x3             // posición actual (donde va a ir la B)
+    add     x4, x4, #4              // PC después de la instrucción
+    sub     x0, x2, x4              // delta en bytes
+    asr     x0, x0, #2              // delta en instrucciones (signed)
+
+    bl      emitir_b_inmediato
     b       ir_next
 
 do_jz:
-    mov     w0, #1
-    bl      emitir_b_placeholder
-    mov     w0, w5
-    mov     w1, #1
-    bl      registrar_parche
+    // Solo forward → placeholder + parche
+    bl      emitir_beq_placeholder
+    mov     w0, w5                  // label_id
+    bl      registrar_parche_forward
     b       ir_next
 
 ir_next:

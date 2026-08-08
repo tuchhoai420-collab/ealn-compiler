@@ -1,1 +1,3 @@
-sea i = 42;
+sea i = 7;
+sea j = 3;
+sea k = i;

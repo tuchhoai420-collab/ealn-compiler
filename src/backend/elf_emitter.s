@@ -18,10 +18,16 @@
 .equ OP_LABEL,  13
 .equ OP_EXIT,   14
 
+.equ MAX_SLOTS,  64
+.equ MAX_REGS,   8          // x0-x7
+
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
-    last_imm:      .skip 8
+    // slot_to_reg[i] = registro físico (0-7) o 0xFF si no asignado
+    slot_to_reg:   .skip MAX_SLOTS
+    next_reg:      .skip 8
+    last_reg:      .skip 8      // último registro que escribió un valor
 
 .section .data
     .align 4
@@ -53,8 +59,11 @@
 
 .section .text
 
-// MOVZ xRd, #imm16
-// w0 = imm16, w1 = Rd
+// ─────────────────────────────────────────────────────────────
+// Helpers de emisión
+// x20 = cursor (NO se restaura entre llamadas)
+// ─────────────────────────────────────────────────────────────
+
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
@@ -64,6 +73,18 @@ emitir_movz_xN:
     lsl     w0, w0, #5
     orr     w2, w2, w0
     str     w2, [x20], #4
+    ret
+
+emitir_mov_reg:
+    // MOV Xd, Xn  ==  ORR Xd, XZR, Xn
+    and     w0, w0, #0x1F
+    and     w1, w1, #0x1F
+    movz    w3, #0
+    movk    w3, #0xAA00, lsl #16
+    orr     w3, w3, w0
+    lsl     w1, w1, #16
+    orr     w3, w3, w1
+    str     w3, [x20], #4
     ret
 
 emitir_add_reg:
@@ -146,16 +167,58 @@ emitir_cmp0:
     ret
 
 // ─────────────────────────────────────────────────────────────
-// recorrer_ir
-// IMPORTANTE: x20 es el cursor de escritura. NO se restaura.
-// Se preservan solo los registros callee-saved que no son el cursor.
+// Asignación de registros a slots
+// ─────────────────────────────────────────────────────────────
+
+// alloc_reg → w0 = siguiente registro libre (0-7, wrap)
+alloc_reg:
+    ldr     x1, =next_reg
+    ldr     x0, [x1]
+    and     x0, x0, #7
+    add     x2, x0, #1
+    str     x2, [x1]
+    ret
+
+// get_slot_reg(slot) → w0 = reg físico
+// Si no tiene, asigna uno nuevo.
+get_slot_reg:
+    cmp     x0, #MAX_SLOTS
+    b.hs    9f
+    ldr     x1, =slot_to_reg
+    ldrb    w2, [x1, x0]
+    cmp     w2, #0xFF
+    b.ne    8f
+    // asignar
+    str     x0, [sp, #-16]!
+    bl      alloc_reg
+    ldr     x3, [sp], #16
+    ldr     x1, =slot_to_reg
+    strb    w0, [x1, x3]
+    ret
+8:  mov     w0, w2
+    ret
+9:  mov     w0, #0
+    ret
+
 // ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-32]!
+    // x20 = cursor vivo (NO se restaura)
+    stp     x29, x30, [sp, #-64]!
     stp     x21, x22, [sp, #16]
+    stp     x23, x24, [sp, #32]
+    stp     x25, x26, [sp, #48]
 
-    // last_imm = 0
-    ldr     x0, =last_imm
+    // Inicializar slot_to_reg = 0xFF
+    ldr     x0, =slot_to_reg
+    mov     x1, #MAX_SLOTS
+1:  mov     w2, #0xFF
+    strb    w2, [x0], #1
+    subs    x1, x1, #1
+    b.ne    1b
+
+    ldr     x0, =next_reg
+    str     xzr, [x0]
+    ldr     x0, =last_reg
     str     xzr, [x0]
 
     ldr     x21, =ir_buffer_ptr
@@ -184,6 +247,10 @@ ir_loop:
 
     cmp     w1, #OP_CONST
     b.eq    do_const
+    cmp     w1, #OP_LOAD
+    b.eq    do_load
+    cmp     w1, #OP_STORE
+    b.eq    do_store
     cmp     w1, #OP_ADD
     b.eq    do_add
     cmp     w1, #OP_SUB
@@ -198,19 +265,64 @@ ir_loop:
     b.eq    do_cmp
     b       ir_next
 
+// ── OP_CONST dest = imm ────────────────────────────────────
 do_const:
-    and     w1, w2, #0x7
+    // Usamos dest % 8 como registro temporal
+    and     w25, w2, #0x7
     mov     w0, w5
+    mov     w1, w25
     bl      emitir_movz_xN
-    ldr     x0, =last_imm
-    str     x5, [x0]
+    ldr     x0, =last_reg
+    str     x25, [x0]
     b       ir_next
 
+// ── OP_LOAD dest = slot[imm] ───────────────────────────────
+do_load:
+    mov     x0, x5                  // slot index
+    bl      get_slot_reg
+    mov     w26, w0                 // reg del slot
+
+    and     w25, w2, #0x7           // dest temporal
+    cmp     w25, w26
+    b.eq    1f
+    mov     w0, w25
+    mov     w1, w26
+    bl      emitir_mov_reg
+1:  ldr     x0, =last_reg
+    str     x25, [x0]
+    b       ir_next
+
+// ── OP_STORE slot[imm] = src1 ──────────────────────────────
+do_store:
+    and     w25, w3, #0x7           // reg fuente (vreg)
+
+    mov     x0, x5                  // slot index
+    bl      get_slot_reg
+    mov     w26, w0                 // reg del slot
+
+    cmp     w26, w25
+    b.eq    1f
+    mov     w0, w26
+    mov     w1, w25
+    bl      emitir_mov_reg
+1:  ldr     x0, =last_reg
+    str     x26, [x0]
+    b       ir_next
+
+// ── Aritmética ─────────────────────────────────────────────
 do_add:
     and     w0, w2, #0x7
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_add_reg
+    and     x1, x0, #7              // approx, better re-read
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w1, [x0, #1]
+    and     x1, x1, #7
+    ldr     x0, =last_reg
+    str     x1, [x0]
     b       ir_next
 
 do_sub:
@@ -218,6 +330,13 @@ do_sub:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_sub_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w1, [x0, #1]
+    and     x1, x1, #7
+    ldr     x0, =last_reg
+    str     x1, [x0]
     b       ir_next
 
 do_mul:
@@ -225,6 +344,13 @@ do_mul:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_mul_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w1, [x0, #1]
+    and     x1, x1, #7
+    ldr     x0, =last_reg
+    str     x1, [x0]
     b       ir_next
 
 do_div:
@@ -232,12 +358,22 @@ do_div:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_sdiv_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w1, [x0, #1]
+    and     x1, x1, #7
+    ldr     x0, =last_reg
+    str     x1, [x0]
     b       ir_next
 
 do_neg:
     and     w0, w2, #0x7
     and     w1, w3, #0x7
     bl      emitir_neg_reg
+    and     x1, x0, #7
+    ldr     x0, =last_reg
+    str     x1, [x0]
     b       ir_next
 
 do_cmp:
@@ -250,16 +386,18 @@ ir_next:
     b       ir_loop
 
 ir_fin:
-    // Poner el último valor constante en x0
-    ldr     x0, =last_imm
-    ldr     x0, [x0]
-    mov     w1, #0
-    and     w0, w0, #0xFFFF
-    bl      emitir_movz_xN
-
-    // NO restauramos x20 — es el cursor vivo
+    // Forzar last_reg → x0
+    ldr     x0, =last_reg
+    ldr     x1, [x0]
+    cbz     x1, 2f
+    mov     w0, #0
+    mov     w1, w1
+    bl      emitir_mov_reg
+2:
+    ldp     x25, x26, [sp, #48]
+    ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
-    ldp     x29, x30, [sp], #32
+    ldp     x29, x30, [sp], #64
     ret
 
 // ─────────────────────────────────────────────────────────────
@@ -269,9 +407,9 @@ emitir_elf:
     stp     x30, xzr, [sp, #32]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19                // cursor inicial
+    mov     x20, x19
 
-    bl      recorrer_ir             // x20 avanza y NO se restaura
+    bl      recorrer_ir             // x20 avanza, no se restaura
 
     // exit(x0)
     mov     w0, #93

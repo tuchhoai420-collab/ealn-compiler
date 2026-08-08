@@ -29,6 +29,10 @@
 .equ TOKEN_SINO,    17
 .equ TOKEN_MIENTRAS,18
 
+// IR opcodes (deben coincidir con src/core/ir.s)
+.equ OP_CONST,   1
+.equ OP_NEG,     8
+
 .section .bss
     .align 3
     ast_root_ptr:   .skip 8
@@ -36,6 +40,7 @@
     expr_tok_idx:   .skip 8
     slot_table_ptr: .skip 8
     slot_count:     .skip 8
+    next_vreg:      .skip 8          // contador de registros virtuales para IR
 
 .section .text
 
@@ -218,8 +223,12 @@ current_ident_span:
     mov     x1, x2
     ret
 
+// ─────────────────────────────────────────────────────────────
+// parse_factor — ahora emite IR en paralelo (CONST / NEG)
+// Sigue devolviendo el valor calculado para no romper el flujo actual.
+// ─────────────────────────────────────────────────────────────
 parse_factor:
-    stp     x30, xzr, [sp, #-16]!
+    stp     x30, xzr, [sp, #-32]!
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
     b.eq    10f
@@ -230,35 +239,79 @@ parse_factor:
     cmp     w0, #TOKEN_MINUS
     b.eq    30f
     mov     x0, #0
-    ldp     x30, xzr, [sp], #16
+    ldp     x30, xzr, [sp], #32
     ret
+
+// NUMBER → OP_CONST
 10: bl      current_number_value
-    str     x0, [sp, #8]
+    str     x0, [sp, #16]               // guardar valor
     bl      advance_token
-    ldr     x0, [sp, #8]
-    ldp     x30, xzr, [sp], #16
+
+    // emitir OP_CONST al IR
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_CONST               // op
+    mov     w1, w2                      // dest = vreg actual
+    mov     w2, #0                      // src1
+    mov     w3, #0                      // src2
+    ldr     x4, [sp, #16]               // imm = valor
+    bl      ir_emit
+
+    // avanzar next_vreg
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    add     x2, x2, #1
+    str     x2, [x1]
+
+    ldr     x0, [sp, #16]               // devolver el valor (comportamiento viejo)
+    ldp     x30, xzr, [sp], #32
     ret
+
+// IDENT → sigue igual (lookup de valor)
 15: bl      current_ident_span
     bl      lookup_slot
-    str     x0, [sp, #8]
+    str     x0, [sp, #16]
     bl      advance_token
-    ldr     x0, [sp, #8]
-    ldp     x30, xzr, [sp], #16
+    ldr     x0, [sp, #16]
+    ldp     x30, xzr, [sp], #32
     ret
+
+// ( expr )
 20: bl      advance_token
     bl      parse_expr
-    str     x0, [sp, #8]
+    str     x0, [sp, #16]
     bl      peek_type
     cmp     w0, #TOKEN_RPAREN
     b.ne    21f
     bl      advance_token
-21: ldr     x0, [sp, #8]
-    ldp     x30, xzr, [sp], #16
+21: ldr     x0, [sp, #16]
+    ldp     x30, xzr, [sp], #32
     ret
+
+// - factor → OP_NEG
 30: bl      advance_token
     bl      parse_factor
-    neg     x0, x0
-    ldp     x30, xzr, [sp], #16
+    str     x0, [sp, #16]               // valor original
+
+    // emitir OP_NEG
+    // dest = nuevo vreg, src1 = vreg anterior (aproximado)
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_NEG
+    mov     w1, w2                      // dest
+    sub     w2, w2, #1                  // src1 = vreg previo (si existía)
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    add     x2, x2, #1
+    str     x2, [x1]
+
+    ldr     x0, [sp, #16]
+    neg     x0, x0                      // comportamiento viejo
+    ldp     x30, xzr, [sp], #32
     ret
 
 parse_term:
@@ -611,6 +664,8 @@ iniciar_parser:
     mov     x22, #0
     ldr     x0, =expr_tok_idx
     str     xzr, [x0]
+    ldr     x0, =next_vreg
+    str     xzr, [x0]                   // reset vreg counter
 parser_loop:
     bl      peek_type
     cmp     w0, #TOKEN_EOF

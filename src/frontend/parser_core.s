@@ -17,12 +17,19 @@
 .equ TOKEN_SEMI,     6
 .equ TOKEN_PLUS,     8
 .equ TOKEN_MINUS,    9
+.equ TOKEN_LBRACE,  14
+.equ TOKEN_RBRACE,  15
+.equ TOKEN_MIENTRAS,18
 
 .equ OP_CONST,   1
 .equ OP_LOAD,    2
 .equ OP_STORE,   3
 .equ OP_ADD,     4
 .equ OP_SUB,     5
+.equ OP_CMP,     9
+.equ OP_JMP,    10
+.equ OP_JZ,     11
+.equ OP_LABEL,  13
 
 .section .bss
     .align 3
@@ -32,6 +39,7 @@
     slot_table_ptr: .skip 8
     slot_count:     .skip 8
     next_vreg:      .skip 8
+    next_label:     .skip 8
 
 .section .text
 
@@ -51,7 +59,6 @@ parsear_numero_token:
 2:  ret
 
 // IMPORTANTE: peek/advance asumen x19=token_array, x20=token_count
-// No tocar x19/x20 dentro de funciones de parse salvo al entrar/salir de iniciar_parser.
 peek_type:
     ldr     x0, =expr_tok_idx
     ldr     x0, [x0]
@@ -196,7 +203,6 @@ parse_one_decl:
 
 // ─────────────────────────────────────────────────────────────
 // parse_assign — NO toca x19/x20
-// Temporales: x9-x15 (caller-saved)
 // ─────────────────────────────────────────────────────────────
 parse_assign:
     stp     x29, x30, [sp, #-16]!
@@ -234,7 +240,7 @@ asg_op:
     cmp     w0, #TOKEN_NUMBER
     b.ne    asg_fail
     bl      current_number_value
-    mov     x10, x0                 // número (NO x20)
+    mov     x10, x0
     bl      advance_token
 
     bl      peek_type
@@ -252,7 +258,7 @@ asg_op:
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x11, x1                 // vregA
+    mov     x11, x1
     add     x1, x1, #1
     str     x1, [x0]
 
@@ -266,7 +272,7 @@ asg_op:
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x12, x1                 // vregB
+    mov     x12, x1
     add     x1, x1, #1
     str     x1, [x0]
 
@@ -280,7 +286,7 @@ asg_op:
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x11, x1                 // vregC
+    mov     x11, x1
     add     x1, x1, #1
     str     x1, [x0]
 
@@ -299,6 +305,124 @@ asg_op:
 asg_fail:
     mov     w0, #0
     ldp     x29, x30, [sp], #16
+    ret
+
+// ─────────────────────────────────────────────────────────────
+// parse_mientras — versión mínima y segura
+// mientras IDENT { assign }
+// Emite:
+//   LABEL L_inicio
+//   LOAD slot0 → vreg
+//   CMP vreg, #0
+//   JZ L_fin
+//   <cuerpo>
+//   JMP L_inicio
+//   LABEL L_fin
+// ─────────────────────────────────────────────────────────────
+parse_mientras:
+    stp     x29, x30, [sp, #-48]!
+    stp     x19, x20, [sp, #16]     // guardar (aunque no los tocamos)
+    stp     x21, x22, [sp, #32]
+
+    // consumir 'mientras'
+    bl      advance_token
+
+    // condición debe ser IDENT (solo slot 0 por ahora)
+    bl      peek_type
+    cmp     w0, #TOKEN_IDENT
+    b.ne    mien_fail
+    bl      advance_token
+
+    // esperar '{'
+    bl      peek_type
+    cmp     w0, #TOKEN_LBRACE
+    b.ne    mien_fail
+    bl      advance_token
+
+    // crear dos labels
+    ldr     x0, =next_label
+    ldr     x1, [x0]
+    mov     x21, x1                 // L_inicio
+    add     x1, x1, #1
+    mov     x22, x1                 // L_fin
+    add     x1, x1, #1
+    str     x1, [x0]
+
+    // LABEL L_inicio
+    mov     w0, #OP_LABEL
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x21
+    bl      ir_emit
+
+    // LOAD slot0 → nuevo vreg
+    ldr     x0, =next_vreg
+    ldr     x1, [x0]
+    mov     w0, #OP_LOAD
+    mov     w2, #0                  // dest vreg
+    mov     w3, #0
+    mov     x4, #0                  // slot 0
+    bl      ir_emit
+    ldr     x0, =next_vreg
+    ldr     x1, [x0]
+    mov     x9, x1                  // vreg de la condición
+    add     x1, x1, #1
+    str     x1, [x0]
+
+    // CMP vreg, #0
+    mov     w0, #OP_CMP
+    mov     w1, #0
+    mov     w2, w9                  // src1 = vreg
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
+    // JZ L_fin
+    mov     w0, #OP_JZ
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x22
+    bl      ir_emit
+
+    // cuerpo: solo un assign por ahora
+    bl      parse_assign
+    // ignoramos el resultado (si falla, el programa se detiene de todos modos)
+
+    // JMP L_inicio
+    mov     w0, #OP_JMP
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x21
+    bl      ir_emit
+
+    // LABEL L_fin
+    mov     w0, #OP_LABEL
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x22
+    bl      ir_emit
+
+    // esperar '}'
+    bl      peek_type
+    cmp     w0, #TOKEN_RBRACE
+    b.ne    mien_fail
+    bl      advance_token
+
+    mov     w0, #1
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #48
+    ret
+
+mien_fail:
+    mov     w0, #0
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #48
     ret
 
 iniciar_parser:
@@ -331,6 +455,8 @@ iniciar_parser:
     str     xzr, [x0]
     ldr     x0, =next_vreg
     str     xzr, [x0]
+    ldr     x0, =next_label
+    str     xzr, [x0]
 
 parser_loop:
     bl      peek_type
@@ -342,6 +468,8 @@ parser_loop:
     b.eq    do_decl
     cmp     w0, #TOKEN_IDENT
     b.eq    do_assign
+    cmp     w0, #TOKEN_MIENTRAS
+    b.eq    do_mientras
     bl      advance_token
     b       parser_loop
 
@@ -350,6 +478,9 @@ do_decl:
     b       parser_loop
 do_assign:
     bl      parse_assign
+    b       parser_loop
+do_mientras:
+    bl      parse_mientras
     b       parser_loop
 
 parser_vacio:

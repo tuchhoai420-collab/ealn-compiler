@@ -1,2 +1,4 @@
-sea i = 5;
-i = i - 1;
+sea i = 3;
+mientras i {
+  i = i - 1;
+}

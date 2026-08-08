@@ -180,7 +180,6 @@ parse_one_decl:
     mov     w1, #0
     mov     w2, w2
     mov     w3, #0
-    // slot index = slot_count - 1
     ldr     x4, =slot_count
     ldr     x4, [x4]
     sub     x4, x4, #1
@@ -195,32 +194,28 @@ parse_one_decl:
 
 // ─────────────────────────────────────────────────────────────
 // parse_assign: IDENT = IDENT - NUMBER ;
-// Por ahora asumimos una sola variable → slot 0
+// Usa solo x19-x22 (callee-saved preservados)
 // ─────────────────────────────────────────────────────────────
 parse_assign:
     stp     x29, x30, [sp, #-48]!
     stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
 
-    // IDENT (lhs)
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
     b.ne    asg_fail
     bl      advance_token
 
-    // =
     bl      peek_type
     cmp     w0, #TOKEN_ASSIGN
     b.ne    asg_fail
     bl      advance_token
 
-    // IDENT (rhs)
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
     b.ne    asg_fail
     bl      advance_token
 
-    // - o +
     bl      peek_type
     cmp     w0, #TOKEN_MINUS
     b.eq    asg_sub
@@ -235,71 +230,67 @@ asg_add:
 asg_op:
     bl      advance_token
 
-    // NUMBER
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
     b.ne    asg_fail
     bl      current_number_value
-    mov     x20, x0
+    mov     x20, x0                 // número
     bl      advance_token
 
-    // ;
     bl      peek_type
     cmp     w0, #TOKEN_SEMI
     b.ne    1f
     bl      advance_token
 1:
-    // Forzamos slot 0 (una sola variable por ahora)
-    mov     x21, #0
-
-    // LOAD slot0 → vreg
+    // slot 0
+    // LOAD
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_LOAD
     mov     w2, #0
     mov     w3, #0
-    mov     x4, x21
+    mov     x4, #0                  // slot 0
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x22, x1                 // vregA
+    mov     x21, x1                 // vregA
     add     x1, x1, #1
     str     x1, [x0]
 
-    // CONST num → vreg
+    // CONST
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_CONST
     mov     w2, #0
     mov     w3, #0
-    mov     x4, x20
+    mov     x4, x20                 // número
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x23, x1                 // vregB
+    mov     x22, x1                 // vregB
     add     x1, x1, #1
     str     x1, [x0]
 
-    // SUB/ADD → vregC
+    // SUB/ADD
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     w0, w19
-    mov     w2, w22
-    mov     w3, w23
+    mov     w0, w19                 // OP
+    mov     w2, w21                 // src1 = vregA
+    mov     w3, w22                 // src2 = vregB
     mov     x4, #0
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x22, x1                 // vregC
+    mov     x21, x1                 // vregC
     add     x1, x1, #1
     str     x1, [x0]
 
-    // STORE slot0 = vregC
+    // STORE
     mov     w0, #OP_STORE
     mov     w1, #0
-    mov     w2, w22
+    mov     w2, w21                 // src1 = vregC
     mov     w3, #0
-    mov     x4, x21
+    mov     x4, #0                  // slot 0
     bl      ir_emit
 
     mov     w0, #1

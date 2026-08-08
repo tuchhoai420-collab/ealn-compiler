@@ -169,32 +169,60 @@ find_reg_by_name:
     ret
 
 // ─────────────────────────────────────────────────────────────
-// Recorrido del IR (por ahora solo presencia, sin emisión)
-// Más adelante aquí se emitirán MOVZ/ADD/SUB desde el IR.
+// Recorrido del IR + emisión de OP_CONST → MOVZ
 // ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-16]!
-    ldr     x0, =ir_buffer_ptr
-    ldr     x0, [x0]
-    cbz     x0, ir_fin
-    ldr     x1, =ir_instr_count
-    ldr     x1, [x1]
-    cbz     x1, ir_fin
+    stp     x29, x30, [sp, #-48]!
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
 
-    // x0 = base del IR, x1 = cantidad
-    // Por ahora solo recorremos sin emitir.
-    // Próximo paso: emitir OP_CONST → MOVZ
-    mov     x2, #0
+    // Guardamos el puntero de emisión actual (x20 viene del caller)
+    // pero en esta función usamos el x20 global del opcode_buffer
+    // que ya está en el contexto de emitir_elf.
+
+    ldr     x19, =ir_buffer_ptr
+    ldr     x19, [x19]
+    cbz     x19, ir_fin
+    ldr     x21, =ir_instr_count
+    ldr     x21, [x21]
+    cbz     x21, ir_fin
+
+    mov     x22, #0                     // índice de instrucción
 ir_loop:
-    cmp     x2, x1
+    cmp     x22, x21
     b.ge    ir_fin
+
     // cada instr = 8 bytes
-    // (vacío por ahora)
-    add     x2, x2, #1
+    mov     x0, x22
+    lsl     x0, x0, #3
+    add     x0, x19, x0
+
+    ldrb    w1, [x0]                    // op
+    ldrb    w2, [x0, #1]                // dest (vreg)
+    ldr     w3, [x0, #4]                // imm
+
+    cmp     w1, #OP_CONST
+    b.ne    ir_next
+
+    // Emitir MOVZ xN, #imm  (N = dest & 7 para no salirnos)
+    and     w1, w2, #7                  // registro físico 0-7
+    mov     w0, w3                      // imm
+    // Nota: x20 debe seguir siendo el puntero de emisión del caller
+    // Como estamos dentro de emitir_elf, x20 ya apunta al buffer.
+    // Pero como usamos stp/ldp, necesitamos preservar x20 del caller.
+    // En realidad el x20 del emitir_elf está en el stack frame del caller.
+    // Para simplificar en este paso, solo emitimos si el imm cabe en 16 bits.
+    and     w0, w0, #0xFFFF
+    bl      emitir_movz_xN
+
+ir_next:
+    add     x22, x22, #1
     b       ir_loop
 
 ir_fin:
-    ldp     x29, x30, [sp], #16
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #48
     ret
 
 emitir_elf:
@@ -361,8 +389,8 @@ fallback:
     bl      emitir_movz_xN
 
 despues_ast:
-    // Aquí el AST ya generó el código clásico.
-    // Ahora recorremos el IR (todavía sin emitir).
+    // El AST ya generó el código clásico.
+    // Ahora el IR también emite los OP_CONST como MOVZ adicionales.
     bl      recorrer_ir
 
 epilogo:

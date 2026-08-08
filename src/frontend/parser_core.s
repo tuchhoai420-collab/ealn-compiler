@@ -31,6 +31,8 @@
 
 // IR opcodes (deben coincidir con src/core/ir.s)
 .equ OP_CONST,   1
+.equ OP_LOAD,    2
+.equ OP_STORE,   3
 .equ OP_ADD,     4
 .equ OP_SUB,     5
 .equ OP_MUL,     6
@@ -44,7 +46,7 @@
     expr_tok_idx:   .skip 8
     slot_table_ptr: .skip 8
     slot_count:     .skip 8
-    next_vreg:      .skip 8          // contador de registros virtuales para IR
+    next_vreg:      .skip 8
 
 .section .text
 
@@ -227,9 +229,6 @@ current_ident_span:
     mov     x1, x2
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_factor — emite IR en paralelo (CONST / NEG)
-// ─────────────────────────────────────────────────────────────
 parse_factor:
     stp     x30, xzr, [sp, #-32]!
     bl      peek_type
@@ -268,11 +267,29 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
-// IDENT
+// IDENT → OP_LOAD + valor
 15: bl      current_ident_span
+    mov     w9, w0
+    mov     w10, w1
     bl      lookup_slot
     str     x0, [sp, #16]
     bl      advance_token
+
+    // emitir OP_LOAD (imm = slot index aproximado por ahora)
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_LOAD
+    mov     w1, w2
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    add     x2, x2, #1
+    str     x2, [x1]
+
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
@@ -313,9 +330,6 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_term — emite OP_MUL / OP_DIV en paralelo
-// ─────────────────────────────────────────────────────────────
 parse_term:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_factor
@@ -329,20 +343,18 @@ parse_term:
     ldp     x30, xzr, [sp], #32
     ret
 
-41: // *
-    bl      advance_token
+41: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     mul     x0, x1, x0
     str     x0, [sp, #16]
 
-    // emitir OP_MUL
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_MUL
-    mov     w1, w2                      // dest
-    sub     w2, w2, #2                  // src1 (aprox)
-    sub     w3, w1, #1                  // src2 (aprox)
+    mov     w1, w2
+    sub     w2, w2, #2
+    sub     w3, w1, #1
     mov     x4, #0
     bl      ir_emit
 
@@ -350,17 +362,14 @@ parse_term:
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     b       40b
 
-42: // /
-    bl      advance_token
+42: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     sdiv    x0, x1, x0
     str     x0, [sp, #16]
 
-    // emitir OP_DIV
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_DIV
@@ -374,12 +383,8 @@ parse_term:
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     b       40b
 
-// ─────────────────────────────────────────────────────────────
-// parse_expr — emite OP_ADD / OP_SUB en paralelo
-// ─────────────────────────────────────────────────────────────
 parse_expr:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_term
@@ -393,14 +398,12 @@ parse_expr:
     ldp     x30, xzr, [sp], #32
     ret
 
-51: // +
-    bl      advance_token
+51: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     add     x0, x1, x0
     str     x0, [sp, #16]
 
-    // emitir OP_ADD
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_ADD
@@ -414,17 +417,14 @@ parse_expr:
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     b       50b
 
-52: // -
-    bl      advance_token
+52: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     sub     x0, x1, x0
     str     x0, [sp, #16]
 
-    // emitir OP_SUB
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_SUB
@@ -438,7 +438,6 @@ parse_expr:
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     b       50b
 
 append_node:
@@ -493,6 +492,18 @@ parse_one_decl:
     mov     w2, w27
     mov     x3, x11
     bl      register_slot
+
+    // emitir OP_STORE (valor ya está en el último vreg)
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    sub     x2, x2, #1
+    mov     w0, #OP_STORE
+    mov     w1, #0
+    mov     w2, w2
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
     mov     w0, #AST_VAR_DECL
     mov     w1, w27
     mov     w2, w9
@@ -560,6 +571,17 @@ parse_assign:
 7:  mov     x1, x0
     mov     x0, x17
     bl      update_slot_value
+
+    // emitir OP_STORE del resultado
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_STORE
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
 5:  mov     w0, #AST_ASSIGN
     mov     w1, w16
     mov     w2, w12

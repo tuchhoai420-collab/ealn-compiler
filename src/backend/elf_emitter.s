@@ -44,7 +44,8 @@
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
-    mov     w2, #0xD2800000
+    movz    w2, #0x0000
+    movk    w2, #0xD280, lsl #16
     orr     w2, w2, w1
     lsl     w0, w0, #5
     orr     w2, w2, w0
@@ -53,8 +54,11 @@ emitir_movz_xN:
 
 emitir_sub_imm:
     and     w0, w0, #0x1F
-    and     w1, w1, #0xFFF
-    mov     w2, #0xD1000000
+    // imm12 ya limitado por caller; mask con registro
+    mov     w3, #0xFFF
+    and     w1, w1, w3
+    movz    w2, #0x0000
+    movk    w2, #0xD100, lsl #16
     orr     w2, w2, w0
     lsl     w0, w0, #5
     orr     w2, w2, w0
@@ -65,8 +69,10 @@ emitir_sub_imm:
 
 emitir_add_imm:
     and     w0, w0, #0x1F
-    and     w1, w1, #0xFFF
-    mov     w2, #0x91000000
+    mov     w3, #0xFFF
+    and     w1, w1, w3
+    movz    w2, #0x0000
+    movk    w2, #0x9100, lsl #16
     orr     w2, w2, w0
     lsl     w0, w0, #5
     orr     w2, w2, w0
@@ -77,23 +83,32 @@ emitir_add_imm:
 
 emitir_cmp0:
     and     w0, w0, #0x1F
-    mov     w2, #0xF100001F
+    movz    w2, #0x001F
+    movk    w2, #0xF100, lsl #16
     lsl     w0, w0, #5
     orr     w2, w2, w0
     str     w2, [x20], #4
     ret
 
 emitir_beq:
-    and     w0, w0, #0x7FFFF
-    mov     w2, #0x54000000
+    // imm19 in w0 — mask via register
+    movz    w3, #0xFFFF
+    movk    w3, #0x7, lsl #16
+    and     w0, w0, w3
+    movz    w2, #0x0000
+    movk    w2, #0x5400, lsl #16
     lsl     w0, w0, #5
     orr     w2, w2, w0
     str     w2, [x20], #4
     ret
 
 emitir_b:
-    and     w0, w0, #0x3FFFFFF
-    mov     w2, #0x14000000
+    // imm26 in w0
+    movz    w3, #0xFFFF
+    movk    w3, #0x3FF, lsl #16
+    and     w0, w0, w3
+    movz    w2, #0x0000
+    movk    w2, #0x1400, lsl #16
     orr     w2, w2, w0
     str     w2, [x20], #4
     ret
@@ -269,8 +284,11 @@ bld:
     ldr     x1, [sp], #16
     sub     x0, x20, x1
     asr     x0, x0, #2
-    and     w0, w0, #0x7FFFF
-    mov     w2, #0x54000000
+    movz    w3, #0xFFFF
+    movk    w3, #0x7, lsl #16
+    and     w0, w0, w3
+    movz    w2, #0x0000
+    movk    w2, #0x5400, lsl #16
     lsl     w0, w0, #5
     orr     w2, w2, w0
     str     w2, [x1]
@@ -298,7 +316,7 @@ epilogo:
     mov     w0, #93
     mov     w1, #8
     bl      emitir_movz_xN
-    mov     w0, #0x0001
+    movz    w0, #0x0001
     movk    w0, #0xD400, lsl #16
     str     w0, [x20], #4
     sub     x25, x20, x19

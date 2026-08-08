@@ -523,7 +523,7 @@ parse_si:
     ret
 
 parse_mientras:
-    stp     x30, xzr, [sp, #-32]!
+    stp     x30, xzr, [sp, #-48]!
     bl      advance_token
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
@@ -539,11 +539,11 @@ parse_mientras:
     mov     x4, #0
     bl      append_node
     str     x0, [sp, #16]
+    str     xzr, [sp, #24]
     bl      peek_type
     cmp     w0, #TOKEN_LBRACE
     b.ne    9f
     bl      advance_token
-    mov     x11, #0
 1:  bl      peek_type
     cmp     w0, #TOKEN_RBRACE
     b.eq    2f
@@ -558,10 +558,16 @@ parse_mientras:
     bl      advance_token
     b       1b
 3:  bl      parse_one_decl
-    cbnz    w0, 5f
+    cbz     w0, 1b
+    ldr     x0, [sp, #24]
+    add     x0, x0, #1
+    str     x0, [sp, #24]
     b       1b
 4:  bl      parse_assign
-5:  add     x11, x11, #1
+    cbz     w0, 1b
+    ldr     x0, [sp, #24]
+    add     x0, x0, #1
+    str     x0, [sp, #24]
     b       1b
 2:  bl      peek_type
     cmp     w0, #TOKEN_RBRACE
@@ -570,12 +576,13 @@ parse_mientras:
 6:  ldr     x0, [sp, #16]
     lsl     x0, x0, #5
     add     x0, x21, x0
-    str     w11, [x0, #4]
+    ldr     w1, [sp, #24]
+    str     w1, [x0, #4]
     mov     w0, #1
-    ldp     x30, xzr, [sp], #32
+    ldp     x30, xzr, [sp], #48
     ret
 9:  mov     w0, #0
-    ldp     x30, xzr, [sp], #32
+    ldp     x30, xzr, [sp], #48
     ret
 
 iniciar_parser:

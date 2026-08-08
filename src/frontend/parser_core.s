@@ -29,7 +29,6 @@
 .equ TOKEN_SINO,    17
 .equ TOKEN_MIENTRAS,18
 
-// IR opcodes
 .equ OP_CONST,   1
 .equ OP_LOAD,    2
 .equ OP_STORE,   3
@@ -270,30 +269,26 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
-// IDENT → OP_LOAD con índice real de slot
 15: bl      current_ident_span
     mov     w9, w0
     mov     w10, w1
-    // obtener índice del slot
     mov     x0, x9
     mov     x1, x10
     bl      lookup_slot_index
-    str     x0, [sp, #16]               // slot index (o -1)
-    // obtener valor (comportamiento viejo)
+    str     x0, [sp, #16]
     mov     x0, x9
     mov     x1, x10
     bl      lookup_slot
-    str     x0, [sp, #24]               // valor
+    str     x0, [sp, #24]
     bl      advance_token
 
-    // emitir OP_LOAD (imm = slot index real)
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_LOAD
-    mov     w1, w2                      // dest = vreg
+    mov     w1, w2
     mov     w2, #0
     mov     w3, #0
-    ldr     x4, [sp, #16]               // imm = slot index
+    ldr     x4, [sp, #16]
     bl      ir_emit
 
     ldr     x1, =next_vreg
@@ -301,7 +296,7 @@ parse_factor:
     add     x2, x2, #1
     str     x2, [x1]
 
-    ldr     x0, [sp, #24]               // devolver valor
+    ldr     x0, [sp, #24]
     ldp     x30, xzr, [sp], #32
     ret
 
@@ -487,21 +482,19 @@ parse_one_decl:
     mov     x3, x11
     bl      register_slot
 
-    // slot index = slot_count - 1
     ldr     x0, =slot_count
     ldr     x0, [x0]
     sub     x0, x0, #1
-    str     x0, [sp, #16]               // slot index real
+    str     x0, [sp, #16]
 
-    // OP_STORE: src1 = último vreg, imm = slot index
     ldr     x1, =next_vreg
     ldr     x2, [x1]
-    sub     x2, x2, #1                  // vreg del valor
+    sub     x2, x2, #1
     mov     w0, #OP_STORE
     mov     w1, #0
-    mov     w2, w2                      // src1 = vreg
+    mov     w2, w2
     mov     w3, #0
-    ldr     x4, [sp, #16]               // imm = slot index
+    ldr     x4, [sp, #16]
     bl      ir_emit
 
     mov     w0, #AST_VAR_DECL
@@ -517,80 +510,141 @@ parse_one_decl:
     ldp     x30, xzr, [sp], #32
     ret
 
+// ─────────────────────────────────────────────────────────────
+// parse_assign — AHORA emite IR de runtime
+// Forma soportada: IDENT = IDENT (+|-) NUMBER ;
+// Genera: LOAD lhs, CONST num, SUB|ADD, STORE lhs
+// ─────────────────────────────────────────────────────────────
 parse_assign:
-    stp     x30, xzr, [sp, #-48]!
+    stp     x30, xzr, [sp, #-64]!
+    stp     x21, x22, [sp, #16]
+    stp     x23, x24, [sp, #32]
+    stp     x25, x26, [sp, #48]
+
     bl      current_ident_span
-    mov     w12, w0
-    mov     w13, w1
+    mov     w12, w0                 // lhs name start
+    mov     w13, w1                 // lhs name len
     bl      advance_token
+
     bl      peek_type
     cmp     w0, #TOKEN_ASSIGN
-    b.ne    9f
+    b.ne    assign_fail
     bl      advance_token
+
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
-    b.ne    9f
+    b.ne    assign_fail
     bl      current_ident_span
-    mov     w14, w0
-    mov     w15, w1
+    mov     w14, w0                 // rhs ident start
+    mov     w15, w1                 // rhs ident len
     bl      advance_token
+
     bl      peek_type
     cmp     w0, #TOKEN_MINUS
-    b.eq    1f
+    b.eq    assign_sub
     cmp     w0, #TOKEN_PLUS
-    b.eq    2f
-    b       9f
-1:  mov     w16, #1
-    b       3f
-2:  mov     w16, #2
-3:  bl      advance_token
+    b.eq    assign_add
+    b       assign_fail
+
+assign_sub:
+    mov     w16, #OP_SUB
+    b       assign_op
+assign_add:
+    mov     w16, #OP_ADD
+
+assign_op:
+    bl      advance_token
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
-    b.ne    9f
+    b.ne    assign_fail
     bl      current_number_value
-    mov     x11, x0
+    mov     x11, x0                 // número
     bl      advance_token
+
     bl      peek_type
     cmp     w0, #TOKEN_SEMI
-    b.ne    4f
+    b.ne    1f
     bl      advance_token
-4:  mov     w0, w12
-    mov     w1, w13
+1:
+    // slot index del lhs
+    mov     x0, x12
+    mov     x1, x13
     bl      lookup_slot_index
     cmp     x0, #-1
-    b.eq    5f
-    mov     x17, x0                     // slot index real
-    mov     w0, w12
-    mov     w1, w13
-    bl      lookup_slot
-    cmp     w16, #1
-    b.ne    6f
-    sub     x0, x0, x11
-    b       7f
-6:  add     x0, x0, x11
-7:  mov     x1, x0
-    mov     x0, x17
-    bl      update_slot_value
+    b.eq    assign_fail
+    mov     x17, x0                 // slot index lhs
 
-    // OP_STORE con índice real
-    mov     w0, #OP_STORE
-    mov     w1, #0
+    // 1. LOAD lhs → vregA
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_LOAD
+    mov     w1, w2                  // dest = vregA
     mov     w2, #0
     mov     w3, #0
-    mov     x4, x17                     // imm = slot index
+    mov     x4, x17                 // imm = slot
+    bl      ir_emit
+    ldr     x1, =next_vreg
+    ldr     x21, [x1]               // vregA
+    add     x2, x21, #1
+    str     x2, [x1]
+
+    // 2. CONST número → vregB
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_CONST
+    mov     w1, w2
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x11
+    bl      ir_emit
+    ldr     x1, =next_vreg
+    ldr     x22, [x1]               // vregB
+    add     x2, x22, #1
+    str     x2, [x1]
+
+    // 3. SUB|ADD vregC = vregA op vregB
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, w16                 // OP_SUB o OP_ADD
+    mov     w1, w2                  // dest = vregC
+    mov     w2, w21                 // src1 = vregA
+    mov     w3, w22                 // src2 = vregB
+    mov     x4, #0
+    bl      ir_emit
+    ldr     x1, =next_vreg
+    ldr     x23, [x1]               // vregC
+    add     x2, x23, #1
+    str     x2, [x1]
+
+    // 4. STORE slot[lhs] = vregC
+    mov     w0, #OP_STORE
+    mov     w1, #0
+    mov     w2, w23                 // src1 = vregC
+    mov     w3, #0
+    mov     x4, x17                 // imm = slot
     bl      ir_emit
 
-5:  mov     w0, #AST_ASSIGN
+    // AST (opcional, para diagnóstico)
+    mov     w0, #AST_ASSIGN
     mov     w1, w16
     mov     w2, w12
     mov     w3, w13
     mov     x4, x11
     bl      append_node
+
     mov     w0, #1
-    ldp     x30, xzr, [sp], #48
+    ldp     x25, x26, [sp, #48]
+    ldp     x23, x24, [sp, #32]
+    ldp     x21, x22, [sp, #16]
+    ldp     x30, xzr, [sp], #64
     ret
-9:  mov     w0, #0
-    ldp     x30, xzr, [sp], #48
+
+assign_fail:
+    mov     w0, #0
+    ldp     x25, x26, [sp, #48]
+    ldp     x23, x24, [sp, #32]
+    ldp     x21, x22, [sp, #16]
+    ldp     x30, xzr, [sp], #64
     ret
 
 skip_block:
@@ -688,7 +742,6 @@ parse_mientras:
     mov     w10, w1
     bl      advance_token
 
-    // labels
     ldr     x0, =next_label
     ldr     x1, [x0]
     mov     x23, x1
@@ -697,7 +750,6 @@ parse_mientras:
     add     x1, x1, #1
     str     x1, [x0]
 
-    // OP_LABEL start
     mov     w0, #OP_LABEL
     mov     w1, #0
     mov     w2, #0
@@ -705,11 +757,10 @@ parse_mientras:
     mov     x4, x23
     bl      ir_emit
 
-    // OP_LOAD condición con índice real de slot
     mov     x0, x9
     mov     x1, x10
     bl      lookup_slot_index
-    mov     x26, x0                     // slot index
+    mov     x26, x0
 
     ldr     x1, =next_vreg
     ldr     x2, [x1]
@@ -717,7 +768,7 @@ parse_mientras:
     mov     w1, w2
     mov     w2, #0
     mov     w3, #0
-    mov     x4, x26                     // imm = slot index real
+    mov     x4, x26
     bl      ir_emit
     ldr     x1, =next_vreg
     ldr     x2, [x1]
@@ -725,7 +776,6 @@ parse_mientras:
     add     x2, x2, #1
     str     x2, [x1]
 
-    // OP_CMP
     mov     w0, #OP_CMP
     mov     w1, #0
     mov     w2, w25
@@ -733,7 +783,6 @@ parse_mientras:
     mov     x4, #0
     bl      ir_emit
 
-    // OP_JZ end
     mov     w0, #OP_JZ
     mov     w1, #0
     mov     w2, #0
@@ -741,7 +790,6 @@ parse_mientras:
     mov     x4, x24
     bl      ir_emit
 
-    // AST node
     mov     w0, #AST_WHILE
     mov     w1, #0
     mov     w2, w9

@@ -1,3 +1,4 @@
-sea i = 7;
-sea j = 3;
-sea k = i;
+sea i = 3;
+mientras i {
+  i = i - 1;
+}

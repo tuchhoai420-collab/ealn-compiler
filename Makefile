@@ -5,6 +5,7 @@ LD  = ld
 ASM_SOURCES = src/boot/init.s \
               src/core/arena_allocator.s \
               src/core/io_zero_copy.s \
+              src/core/ir.s \
               src/frontend/lexer_core.s \
               src/frontend/parser_core.s \
               src/backend/elf_emitter.s

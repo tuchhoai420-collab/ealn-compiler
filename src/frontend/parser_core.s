@@ -29,7 +29,7 @@
 .equ TOKEN_SINO,    17
 .equ TOKEN_MIENTRAS,18
 
-// IR opcodes (deben coincidir con src/core/ir.s)
+// IR opcodes
 .equ OP_CONST,   1
 .equ OP_LOAD,    2
 .equ OP_STORE,   3
@@ -38,6 +38,12 @@
 .equ OP_MUL,     6
 .equ OP_DIV,     7
 .equ OP_NEG,     8
+.equ OP_CMP,     9
+.equ OP_JMP,    10
+.equ OP_JZ,     11
+.equ OP_JNZ,    12
+.equ OP_LABEL,  13
+.equ OP_EXIT,   14
 
 .section .bss
     .align 3
@@ -47,6 +53,7 @@
     slot_table_ptr: .skip 8
     slot_count:     .skip 8
     next_vreg:      .skip 8
+    next_label:     .skip 8          // contador de labels para control de flujo
 
 .section .text
 
@@ -244,11 +251,9 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
-// NUMBER → OP_CONST
 10: bl      current_number_value
     str     x0, [sp, #16]
     bl      advance_token
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_CONST
@@ -257,25 +262,20 @@ parse_factor:
     mov     w3, #0
     ldr     x4, [sp, #16]
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
 
-// IDENT → OP_LOAD + valor
 15: bl      current_ident_span
     mov     w9, w0
     mov     w10, w1
     bl      lookup_slot
     str     x0, [sp, #16]
     bl      advance_token
-
-    // emitir OP_LOAD (imm = slot index aproximado por ahora)
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_LOAD
@@ -284,17 +284,14 @@ parse_factor:
     mov     w3, #0
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
 
-// ( expr )
 20: bl      advance_token
     bl      parse_expr
     str     x0, [sp, #16]
@@ -306,11 +303,9 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
-// - factor → OP_NEG
 30: bl      advance_token
     bl      parse_factor
     str     x0, [sp, #16]
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_NEG
@@ -319,12 +314,10 @@ parse_factor:
     mov     w3, #0
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-
     ldr     x0, [sp, #16]
     neg     x0, x0
     ldp     x30, xzr, [sp], #32
@@ -342,13 +335,11 @@ parse_term:
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-
 41: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     mul     x0, x1, x0
     str     x0, [sp, #16]
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_MUL
@@ -357,19 +348,16 @@ parse_term:
     sub     w3, w1, #1
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
     b       40b
-
 42: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     sdiv    x0, x1, x0
     str     x0, [sp, #16]
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_DIV
@@ -378,7 +366,6 @@ parse_term:
     sub     w3, w1, #1
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
@@ -397,13 +384,11 @@ parse_expr:
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-
 51: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     add     x0, x1, x0
     str     x0, [sp, #16]
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_ADD
@@ -412,19 +397,16 @@ parse_expr:
     sub     w3, w1, #1
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
     b       50b
-
 52: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     sub     x0, x1, x0
     str     x0, [sp, #16]
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_SUB
@@ -433,7 +415,6 @@ parse_expr:
     sub     w3, w1, #1
     mov     x4, #0
     bl      ir_emit
-
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
@@ -492,8 +473,6 @@ parse_one_decl:
     mov     w2, w27
     mov     x3, x11
     bl      register_slot
-
-    // emitir OP_STORE (valor ya está en el último vreg)
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     sub     x2, x2, #1
@@ -503,7 +482,6 @@ parse_one_decl:
     mov     w3, #0
     mov     x4, #0
     bl      ir_emit
-
     mov     w0, #AST_VAR_DECL
     mov     w1, w27
     mov     w2, w9
@@ -571,8 +549,6 @@ parse_assign:
 7:  mov     x1, x0
     mov     x0, x17
     bl      update_slot_value
-
-    // emitir OP_STORE del resultado
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_STORE
@@ -581,7 +557,6 @@ parse_assign:
     mov     w3, #0
     mov     x4, #0
     bl      ir_emit
-
 5:  mov     w0, #AST_ASSIGN
     mov     w1, w16
     mov     w2, w12
@@ -674,28 +649,88 @@ parse_si:
 8:  ldp     x30, xzr, [sp], #32
     ret
 
+// ─────────────────────────────────────────────────────────────
+// parse_mientras — ahora emite control de flujo en el IR
+// ─────────────────────────────────────────────────────────────
 parse_mientras:
-    stp     x30, xzr, [sp, #-48]!
+    stp     x30, xzr, [sp, #-64]!
+    stp     x23, x24, [sp, #16]
+    stp     x25, x26, [sp, #32]
+    stp     x27, x28, [sp, #48]
+
     bl      advance_token
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
     b.ne    9f
+
     bl      current_ident_span
-    mov     w9, w0
-    mov     w10, w1
+    mov     w9, w0                      // name_start
+    mov     w10, w1                     // name_len
     bl      advance_token
+
+    // --- Generar labels ---
+    ldr     x0, =next_label
+    ldr     x1, [x0]
+    mov     x23, x1                     // label_start
+    add     x1, x1, #1
+    mov     x24, x1                     // label_end
+    add     x1, x1, #1
+    str     x1, [x0]
+
+    // OP_LABEL start
+    mov     w0, #OP_LABEL
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x23
+    bl      ir_emit
+
+    // OP_LOAD de la variable de condición (aproximado)
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     w0, #OP_LOAD
+    mov     w1, w2
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+    ldr     x1, =next_vreg
+    ldr     x2, [x1]
+    mov     x25, x2                     // vreg de la condición
+    add     x2, x2, #1
+    str     x2, [x1]
+
+    // OP_CMP (cond, 0)
+    mov     w0, #OP_CMP
+    mov     w1, #0
+    mov     w2, w25
+    mov     w3, #0
+    mov     x4, #0
+    bl      ir_emit
+
+    // OP_JZ label_end
+    mov     w0, #OP_JZ
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x24
+    bl      ir_emit
+
+    // --- AST node (para el backend actual) ---
     mov     w0, #AST_WHILE
     mov     w1, #0
     mov     w2, w9
     mov     w3, w10
     mov     x4, #0
     bl      append_node
-    str     x0, [sp, #16]
-    str     xzr, [sp, #24]
+    str     x0, [sp, #0]                // índice del nodo WHILE
+    str     xzr, [sp, #8]               // body_count
+
     bl      peek_type
     cmp     w0, #TOKEN_LBRACE
     b.ne    9f
     bl      advance_token
+
 1:  bl      peek_type
     cmp     w0, #TOKEN_RBRACE
     b.eq    2f
@@ -711,30 +746,57 @@ parse_mientras:
     b       1b
 3:  bl      parse_one_decl
     cbz     w0, 1b
-    ldr     x0, [sp, #24]
+    ldr     x0, [sp, #8]
     add     x0, x0, #1
-    str     x0, [sp, #24]
+    str     x0, [sp, #8]
     b       1b
 4:  bl      parse_assign
     cbz     w0, 1b
-    ldr     x0, [sp, #24]
+    ldr     x0, [sp, #8]
     add     x0, x0, #1
-    str     x0, [sp, #24]
+    str     x0, [sp, #8]
     b       1b
+
 2:  bl      peek_type
     cmp     w0, #TOKEN_RBRACE
     b.ne    6f
     bl      advance_token
-6:  ldr     x0, [sp, #16]
+6:
+    // OP_JMP label_start
+    mov     w0, #OP_JMP
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x23
+    bl      ir_emit
+
+    // OP_LABEL end
+    mov     w0, #OP_LABEL
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x24
+    bl      ir_emit
+
+    // actualizar body_count en el nodo AST
+    ldr     x0, [sp, #0]
     lsl     x0, x0, #5
     add     x0, x21, x0
-    ldr     w1, [sp, #24]
+    ldr     w1, [sp, #8]
     str     w1, [x0, #4]
+
     mov     w0, #1
-    ldp     x30, xzr, [sp], #48
+    ldp     x27, x28, [sp, #48]
+    ldp     x25, x26, [sp, #32]
+    ldp     x23, x24, [sp, #16]
+    ldp     x30, xzr, [sp], #64
     ret
+
 9:  mov     w0, #0
-    ldp     x30, xzr, [sp], #48
+    ldp     x27, x28, [sp, #48]
+    ldp     x25, x26, [sp, #32]
+    ldp     x23, x24, [sp, #16]
+    ldp     x30, xzr, [sp], #64
     ret
 
 iniciar_parser:
@@ -764,6 +826,8 @@ iniciar_parser:
     ldr     x0, =expr_tok_idx
     str     xzr, [x0]
     ldr     x0, =next_vreg
+    str     xzr, [x0]
+    ldr     x0, =next_label
     str     xzr, [x0]
 parser_loop:
     bl      peek_type

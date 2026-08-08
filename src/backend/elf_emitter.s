@@ -146,10 +146,13 @@ emitir_cmp0:
     ret
 
 // ─────────────────────────────────────────────────────────────
+// recorrer_ir
+// IMPORTANTE: x20 es el cursor de escritura. NO se restaura.
+// Se preservan solo los registros callee-saved que no son el cursor.
+// ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-48]!
-    stp     x19, x20, [sp, #16]
-    stp     x21, x22, [sp, #32]
+    stp     x29, x30, [sp, #-32]!
+    stp     x21, x22, [sp, #16]
 
     // last_imm = 0
     ldr     x0, =last_imm
@@ -160,7 +163,7 @@ recorrer_ir:
     cbz     x21, ir_fin
 
     bl      ir_count
-    mov     x22, x0                 // n instrucciones
+    mov     x22, x0
     cbz     x22, ir_fin
 
     mov     x23, #0
@@ -169,7 +172,6 @@ ir_loop:
     cmp     x23, x22
     b.ge    ir_fin
 
-    // Cargar Instr (8 bytes)
     mov     x0, x23
     lsl     x0, x0, #3
     add     x0, x21, x0
@@ -194,15 +196,12 @@ ir_loop:
     b.eq    do_neg
     cmp     w1, #OP_CMP
     b.eq    do_cmp
-    // LOAD / STORE / JMP / JZ / JNZ / LABEL / EXIT → no-op por ahora
     b       ir_next
 
 do_const:
-    // Materializar en registro dest % 8
     and     w1, w2, #0x7
     mov     w0, w5
     bl      emitir_movz_xN
-    // Guardar valor
     ldr     x0, =last_imm
     str     x5, [x0]
     b       ir_next
@@ -254,13 +253,13 @@ ir_fin:
     // Poner el último valor constante en x0
     ldr     x0, =last_imm
     ldr     x0, [x0]
-    mov     w1, #0                  // dest = x0
+    mov     w1, #0
     and     w0, w0, #0xFFFF
     bl      emitir_movz_xN
 
-    ldp     x21, x22, [sp, #32]
-    ldp     x19, x20, [sp, #16]
-    ldp     x29, x30, [sp], #48
+    // NO restauramos x20 — es el cursor vivo
+    ldp     x21, x22, [sp, #16]
+    ldp     x29, x30, [sp], #32
     ret
 
 // ─────────────────────────────────────────────────────────────
@@ -270,9 +269,9 @@ emitir_elf:
     stp     x30, xzr, [sp, #32]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19
+    mov     x20, x19                // cursor inicial
 
-    bl      recorrer_ir
+    bl      recorrer_ir             // x20 avanza y NO se restaura
 
     // exit(x0)
     mov     w0, #93

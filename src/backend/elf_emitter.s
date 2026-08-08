@@ -41,10 +41,11 @@
 
 .section .text
 
+// MOVZ xRd, #imm16
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
-    movz    w2, #0x0000
+    movz    w2, #0
     movk    w2, #0xD280, lsl #16
     orr     w2, w2, w1
     lsl     w0, w0, #5
@@ -52,35 +53,37 @@ emitir_movz_xN:
     str     w2, [x20], #4
     ret
 
+// SUB Xd, Xd, #imm12
 emitir_sub_imm:
     and     w0, w0, #0x1F
-    // imm12 ya limitado por caller; mask con registro
     mov     w3, #0xFFF
     and     w1, w1, w3
-    movz    w2, #0x0000
+    movz    w2, #0
     movk    w2, #0xD100, lsl #16
     orr     w2, w2, w0
-    lsl     w0, w0, #5
-    orr     w2, w2, w0
+    lsl     w4, w0, #5
+    orr     w2, w2, w4
     lsl     w1, w1, #10
     orr     w2, w2, w1
     str     w2, [x20], #4
     ret
 
+// ADD Xd, Xd, #imm12
 emitir_add_imm:
     and     w0, w0, #0x1F
     mov     w3, #0xFFF
     and     w1, w1, w3
-    movz    w2, #0x0000
+    movz    w2, #0
     movk    w2, #0x9100, lsl #16
     orr     w2, w2, w0
-    lsl     w0, w0, #5
-    orr     w2, w2, w0
+    lsl     w4, w0, #5
+    orr     w2, w2, w4
     lsl     w1, w1, #10
     orr     w2, w2, w1
     str     w2, [x20], #4
     ret
 
+// CMP Xn, #0
 emitir_cmp0:
     and     w0, w0, #0x1F
     movz    w2, #0x001F
@@ -90,24 +93,31 @@ emitir_cmp0:
     str     w2, [x20], #4
     ret
 
-emitir_beq:
-    // imm19 in w0 — mask via register
+// write B.EQ at [x1] with imm19 in w0 (does not advance x20)
+patch_beq:
     movz    w3, #0xFFFF
     movk    w3, #0x7, lsl #16
     and     w0, w0, w3
-    movz    w2, #0x0000
+    movz    w2, #0
     movk    w2, #0x5400, lsl #16
     lsl     w0, w0, #5
     orr     w2, w2, w0
+    str     w2, [x1]
+    ret
+
+// emit B.EQ placeholder (imm19=0), return addr in x0 via keeping x20-4
+emitir_beq_placeholder:
+    movz    w2, #0
+    movk    w2, #0x5400, lsl #16
     str     w2, [x20], #4
     ret
 
+// B imm26 in w0 (signed)
 emitir_b:
-    // imm26 in w0
     movz    w3, #0xFFFF
     movk    w3, #0x3FF, lsl #16
     and     w0, w0, w3
-    movz    w2, #0x0000
+    movz    w2, #0
     movk    w2, #0x1400, lsl #16
     orr     w2, w2, w0
     str     w2, [x20], #4
@@ -152,11 +162,12 @@ find_reg_by_name:
     ret
 
 emitir_elf:
-    stp     x19, x20, [sp, #-80]!
+    stp     x19, x20, [sp, #-96]!
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
     stp     x25, x26, [sp, #48]
-    stp     x27, x30, [sp, #64]
+    stp     x27, x28, [sp, #64]
+    stp     x30, xzr, [sp, #80]
 
     ldr     x19, =opcode_buffer
     mov     x20, x19
@@ -220,17 +231,22 @@ do_assign:
     b.eq    next
     mov     w1, w4
     cmp     w26, #1
-    b.eq    1f
+    b.eq    da_sub
     cmp     w26, #2
-    b.eq    2f
+    b.eq    da_add
     b       next
-1:  bl      emitir_sub_imm
+da_sub:
+    bl      emitir_sub_imm
     b       next
-2:  bl      emitir_add_imm
+da_add:
+    bl      emitir_add_imm
     b       next
 
+// ── WHILE ──────────────────────────────────────────────
+// layout: WHILE node, then body_count following nodes
 do_while:
-    ldr     w15, [x0, #4]
+    // x26 = body_count (callee-saved, safe across bl)
+    ldr     w26, [x0, #4]
     ldr     w2, [x0, #8]
     ldr     w3, [x0, #12]
     mov     x0, x2
@@ -238,16 +254,23 @@ do_while:
     bl      find_reg_by_name
     cmp     w0, #0xFF
     b.eq    skip_wb
-    mov     w25, w0
+    mov     w25, w0                 // cond reg (callee-saved)
+
+    // loop_start = address of CMP
     mov     x27, x20
+
+    // CMP cond, #0
     mov     w0, w25
     bl      emitir_cmp0
-    str     x20, [sp, #-16]!
-    mov     w0, #0
-    bl      emitir_beq
+
+    // B.EQ end placeholder; save its address in x28
+    mov     x28, x20
+    bl      emitir_beq_placeholder
+
+    // body nodes
     add     x23, x23, #1
 blp:
-    cbz     w15, bld
+    cbz     w26, bld
     cmp     x23, x22
     b.ge    bld
     mov     x0, x23
@@ -256,51 +279,56 @@ blp:
     ldr     w1, [x0]
     cmp     w1, #AST_ASSIGN
     b.ne    bln
-    ldr     w26, [x0, #4]
+    // emit assign inside loop
+    ldr     w7, [x0, #4]            // op
     ldr     w2, [x0, #8]
     ldr     w3, [x0, #12]
     ldr     x4, [x0, #16]
     mov     x0, x2
     mov     x1, x3
+    // save op across bl
+    str     w7, [sp, #-16]!
+    str     x4, [sp, #8]
     bl      find_reg_by_name
+    ldr     x4, [sp, #8]
+    ldr     w7, [sp], #16
     cmp     w0, #0xFF
     b.eq    bln
     mov     w1, w4
-    cmp     w26, #1
-    b.ne    11f
+    cmp     w7, #1
+    b.ne    1f
     bl      emitir_sub_imm
     b       bln
-11: cmp     w26, #2
+1:  cmp     w7, #2
     b.ne    bln
     bl      emitir_add_imm
 bln:
     add     x23, x23, #1
-    sub     w15, w15, #1
+    sub     w26, w26, #1
     b       blp
+
 bld:
+    // B loop_start
     sub     x0, x27, x20
     asr     x0, x0, #2
     bl      emitir_b
-    ldr     x1, [sp], #16
-    sub     x0, x20, x1
+
+    // patch B.EQ: offset = (end - beq_insn) / 4
+    sub     x0, x20, x28
     asr     x0, x0, #2
-    movz    w3, #0xFFFF
-    movk    w3, #0x7, lsl #16
-    and     w0, w0, w3
-    movz    w2, #0x0000
-    movk    w2, #0x5400, lsl #16
-    lsl     w0, w0, #5
-    orr     w2, w2, w0
-    str     w2, [x1]
+    mov     x1, x28
+    bl      patch_beq
+
+    // x23 already past body
     b       gen_loop
 
 skip_wb:
     mov     x0, x23
     lsl     x0, x0, #5
     add     x0, x21, x0
-    ldr     w15, [x0, #4]
+    ldr     w26, [x0, #4]
     add     x23, x23, #1
-    add     x23, x23, x15
+    add     x23, x23, x26
     b       gen_loop
 
 next:
@@ -319,12 +347,14 @@ epilogo:
     movz    w0, #0x0001
     movk    w0, #0xD400, lsl #16
     str     w0, [x20], #4
+
     sub     x25, x20, x19
     mov     x5, #120
     add     x5, x5, x25
     ldr     x6, =program_header
     str     x5, [x6, #32]
     str     x5, [x6, #40]
+
     mov     x0, AT_FDCWD
     ldr     x1, =archivo_salida
     mov     x2, #577
@@ -332,6 +362,7 @@ epilogo:
     mov     x8, #56
     svc     #0
     mov     x22, x0
+
     mov     x0, x22
     ldr     x1, =elf_header
     mov     x2, #64
@@ -350,9 +381,11 @@ epilogo:
     mov     x0, x22
     mov     x8, #57
     svc     #0
-    ldp     x27, x30, [sp, #64]
+
+    ldp     x30, xzr, [sp, #80]
+    ldp     x27, x28, [sp, #64]
     ldp     x25, x26, [sp, #48]
     ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
-    ldp     x19, x20, [sp], #80
+    ldp     x19, x20, [sp], #96
     ret

@@ -8,15 +8,6 @@
 .equ OP_STORE,   3
 .equ OP_ADD,     4
 .equ OP_SUB,     5
-.equ OP_MUL,     6
-.equ OP_DIV,     7
-.equ OP_NEG,     8
-.equ OP_CMP,     9
-.equ OP_JMP,    10
-.equ OP_JZ,     11
-.equ OP_JNZ,    12
-.equ OP_LABEL,  13
-.equ OP_EXIT,   14
 
 .section .bss
     .align 4
@@ -53,6 +44,7 @@
 
 .section .text
 
+// MOVZ Xd, #imm16
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
@@ -64,17 +56,20 @@ emitir_movz_xN:
     str     w2, [x20], #4
     ret
 
+// MOV Xd, Xm  ==  ORR Xd, XZR, Xm
+// Encoding: 0xAA0003E0 | Rd | (Rm << 16)
 emitir_mov_reg:
-    and     w0, w0, #0x1F
-    and     w1, w1, #0x1F
-    movz    w3, #0
-    movk    w3, #0xAA00, lsl #16
-    orr     w3, w3, w0
+    and     w0, w0, #0x1F          // Rd
+    and     w1, w1, #0x1F          // Rm
+    movz    w3, #0x03E0
+    movk    w3, #0xAA00, lsl #16   // 0xAA0003E0
+    orr     w3, w3, w0             // Rd
     lsl     w1, w1, #16
-    orr     w3, w3, w1
+    orr     w3, w3, w1             // Rm
     str     w3, [x20], #4
     ret
 
+// ADD Xd, Xn, Xm
 emitir_add_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -89,6 +84,7 @@ emitir_add_reg:
     str     w3, [x20], #4
     ret
 
+// SUB Xd, Xn, Xm
 emitir_sub_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -104,7 +100,6 @@ emitir_sub_reg:
     ret
 
 recorrer_ir:
-    // x20 = cursor vivo (NO se restaura)
     stp     x29, x30, [sp, #-48]!
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -130,11 +125,11 @@ ir_loop:
     lsl     x0, x0, #3
     add     x0, x21, x0
 
-    ldrb    w1, [x0]                // op
-    ldrb    w2, [x0, #1]            // dest
-    ldrb    w3, [x0, #2]            // src1
-    ldrb    w4, [x0, #3]            // src2
-    ldrsw   x5, [x0, #4]            // imm
+    ldrb    w1, [x0]
+    ldrb    w2, [x0, #1]
+    ldrb    w3, [x0, #2]
+    ldrb    w4, [x0, #3]
+    ldrsw   x5, [x0, #4]
 
     cmp     w1, #OP_CONST
     b.eq    do_const
@@ -158,7 +153,6 @@ do_const:
     b       ir_next
 
 do_load:
-    // slot N → xN, dest → x(dest%8)
     and     w26, w5, #0x7
     and     w25, w2, #0x7
     cmp     w25, w26
@@ -171,7 +165,6 @@ do_load:
     b       ir_next
 
 do_store:
-    // src1 → slot N (xN)
     and     w25, w3, #0x7
     and     w26, w5, #0x7
     cmp     w26, w25
@@ -216,7 +209,6 @@ ir_next:
     b       ir_loop
 
 ir_fin:
-    // Siempre materializar last_reg en x0 (incluso si es 0)
     ldr     x0, =last_reg
     ldr     x1, [x0]
     mov     w0, #0

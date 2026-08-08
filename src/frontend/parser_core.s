@@ -74,7 +74,7 @@ current_number_value:
     b       parsear_numero_token
 
 parse_factor:
-    str     x30, [sp, #-16]!
+    stp     x30, xzr, [sp, #-16]!
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
     b.eq    10f
@@ -83,31 +83,31 @@ parse_factor:
     cmp     w0, #TOKEN_MINUS
     b.eq    30f
     mov     x0, #0
-    ldr     x30, [sp], #16
+    ldp     x30, xzr, [sp], #16
     ret
 
 10: bl      current_number_value
-    mov     x1, x0
+    str     x0, [sp, #8]
     bl      advance_token
-    mov     x0, x1
-    ldr     x30, [sp], #16
+    ldr     x0, [sp, #8]
+    ldp     x30, xzr, [sp], #16
     ret
 
 20: bl      advance_token
     bl      parse_expr
-    mov     x1, x0
+    str     x0, [sp, #8]
     bl      peek_type
     cmp     w0, #TOKEN_RPAREN
     b.ne    21f
     bl      advance_token
-21: mov     x0, x1
-    ldr     x30, [sp], #16
+21: ldr     x0, [sp, #8]
+    ldp     x30, xzr, [sp], #16
     ret
 
 30: bl      advance_token
     bl      parse_factor
     neg     x0, x0
-    ldr     x30, [sp], #16
+    ldp     x30, xzr, [sp], #16
     ret
 
 parse_term:

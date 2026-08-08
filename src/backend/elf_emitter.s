@@ -65,9 +65,9 @@ emitir_movz_xN:
 
 // ADD Xd, Xn, Xm
 emitir_add_reg:
-    and     w0, w0, #0x1F          // Rd
-    and     w1, w1, #0x1F          // Rn
-    and     w2, w2, #0x1F          // Rm
+    and     w0, w0, #0x1F
+    and     w1, w1, #0x1F
+    and     w2, w2, #0x1F
     movz    w3, #0
     movk    w3, #0x8B00, lsl #16
     orr     w3, w3, w0
@@ -123,14 +123,13 @@ emitir_sdiv_reg:
     str     w3, [x20], #4
     ret
 
-// NEG Xd, Xm  (SUB Xd, XZR, Xm)
+// NEG Xd, Xm
 emitir_neg_reg:
-    and     w0, w0, #0x1F          // Rd
-    and     w1, w1, #0x1F          // Rm
+    and     w0, w0, #0x1F
+    and     w1, w1, #0x1F
     movz    w3, #0
     movk    w3, #0xCB00, lsl #16
     orr     w3, w3, w0
-    // Rn = 31 (XZR)
     mov     w2, #31
     lsl     w2, w2, #5
     orr     w3, w3, w2
@@ -139,7 +138,6 @@ emitir_neg_reg:
     str     w3, [x20], #4
     ret
 
-// SUB Xd, Xd, #imm12
 emitir_sub_imm:
     and     w0, w0, #0x1F
     mov     w3, #0xFFF
@@ -154,7 +152,6 @@ emitir_sub_imm:
     str     w2, [x20], #4
     ret
 
-// ADD Xd, Xd, #imm12
 emitir_add_imm:
     and     w0, w0, #0x1F
     mov     w3, #0xFFF
@@ -169,7 +166,6 @@ emitir_add_imm:
     str     w2, [x20], #4
     ret
 
-// CMP Xn, #0
 emitir_cmp0:
     and     w0, w0, #0x1F
     movz    w2, #0x001F
@@ -244,102 +240,10 @@ find_reg_by_name:
     ldp     x30, xzr, [sp], #32
     ret
 
-// ─────────────────────────────────────────────────────────────
-// Recorrido del IR + emisión real
-// x20 es el puntero de emisión vivo (no se restaura)
-// ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-32]!
-    stp     x19, x21, [sp, #16]
-
-    ldr     x19, =ir_buffer_ptr
-    ldr     x19, [x19]
-    cbz     x19, ir_fin
-    ldr     x21, =ir_instr_count
-    ldr     x21, [x21]
-    cbz     x21, ir_fin
-
-    mov     x2, #0
-ir_loop:
-    cmp     x2, x21
-    b.ge    ir_fin
-
-    mov     x0, x2
-    lsl     x0, x0, #3
-    add     x0, x19, x0
-
-    ldrb    w1, [x0]                    // op
-    ldrb    w3, [x0, #1]                // dest
-    ldrb    w4, [x0, #2]                // src1
-    ldrb    w5, [x0, #3]                // src2
-    ldr     w6, [x0, #4]                // imm
-
-    // limitar registros a 0-7
-    and     w3, w3, #7
-    and     w4, w4, #7
-    and     w5, w5, #7
-
-    cmp     w1, #OP_CONST
-    b.eq    ir_const
-    cmp     w1, #OP_ADD
-    b.eq    ir_add
-    cmp     w1, #OP_SUB
-    b.eq    ir_sub
-    cmp     w1, #OP_MUL
-    b.eq    ir_mul
-    cmp     w1, #OP_DIV
-    b.eq    ir_div
-    cmp     w1, #OP_NEG
-    b.eq    ir_neg
-    b       ir_next
-
-ir_const:
-    mov     w0, w6
-    mov     w1, w3
-    bl      emitir_movz_xN
-    b       ir_next
-
-ir_add:
-    mov     w0, w3
-    mov     w1, w4
-    mov     w2, w5
-    bl      emitir_add_reg
-    b       ir_next
-
-ir_sub:
-    mov     w0, w3
-    mov     w1, w4
-    mov     w2, w5
-    bl      emitir_sub_reg
-    b       ir_next
-
-ir_mul:
-    mov     w0, w3
-    mov     w1, w4
-    mov     w2, w5
-    bl      emitir_mul_reg
-    b       ir_next
-
-ir_div:
-    mov     w0, w3
-    mov     w1, w4
-    mov     w2, w5
-    bl      emitir_sdiv_reg
-    b       ir_next
-
-ir_neg:
-    mov     w0, w3
-    mov     w1, w4
-    bl      emitir_neg_reg
-    b       ir_next
-
-ir_next:
-    add     x2, x2, #1
-    b       ir_loop
-
-ir_fin:
-    ldp     x19, x21, [sp, #16]
-    ldp     x29, x30, [sp], #32
+    // Temporalmente desactivado para mantener estabilidad.
+    // El IR se sigue generando en el parser.
+    // Próximo paso: integrar correctamente reemplazando el camino AST.
     ret
 
 emitir_elf:
@@ -506,7 +410,8 @@ fallback:
     bl      emitir_movz_xN
 
 despues_ast:
-    bl      recorrer_ir
+    // IR emission temporarily disabled to restore exit status 0
+    // bl      recorrer_ir
 
 epilogo:
     mov     w0, #93

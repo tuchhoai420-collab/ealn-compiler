@@ -18,10 +18,20 @@
 .equ OP_LABEL,  13
 .equ OP_EXIT,   14
 
+.equ MAX_LABELS, 64
+
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
     last_reg:      .skip 8
+    // label_pos[id] = offset en bytes desde el inicio del buffer (o -1)
+    label_pos:     .skip MAX_LABELS * 8
+    // pending jumps: simple lista lineal (offset del instr, label_id, tipo)
+    // tipo: 0=JMP, 1=JZ, 2=JNZ
+    pending_count: .skip 8
+    pending_off:   .skip MAX_LABELS * 8
+    pending_lab:   .skip MAX_LABELS * 8
+    pending_typ:   .skip MAX_LABELS * 8
 
 .section .data
     .align 4
@@ -54,8 +64,7 @@
 .section .text
 
 // ─────────────────────────────────────────────────────────────
-// Helpers
-// x20 = cursor (NO se restaura)
+// Helpers de emisión (x20 = cursor vivo)
 // ─────────────────────────────────────────────────────────────
 
 emitir_movz_xN:
@@ -159,16 +168,63 @@ emitir_cmp0:
     str     w2, [x20], #4
     ret
 
-// ─────────────────────────────────────────────────────────────
-// Mapeo estático: slot N → registro xN  (N = 0..7)
-// Suficiente para los tests actuales. Sin tablas dinámicas.
-// ─────────────────────────────────────────────────────────────
+// Emite un B (incondicional) con offset provisional 0
+emitir_b_placeholder:
+    movz    w2, #0
+    movk    w2, #0x1400, lsl #16
+    str     w2, [x20], #4
+    ret
 
+// Emite un B.EQ con offset provisional 0
+emitir_beq_placeholder:
+    movz    w2, #0
+    movk    w2, #0x5400, lsl #16
+    str     w2, [x20], #4
+    ret
+
+// Patch B: w0 = offset en instrucciones (signed), x1 = dirección del instr
+patch_b:
+    // B encoding: 0001 01 imm26
+    and     w0, w0, #0x03FFFFFF
+    movz    w2, #0
+    movk    w2, #0x1400, lsl #16
+    orr     w2, w2, w0
+    str     w2, [x1]
+    ret
+
+// Patch B.EQ: w0 = offset en instrucciones (signed 19-bit), x1 = dirección
+patch_beq:
+    // B.cond: 0101 0100 imm19 0 cond
+    // cond = 0000 (EQ)
+    and     w0, w0, #0x0007FFFF
+    lsl     w0, w0, #5
+    movz    w2, #0
+    movk    w2, #0x5400, lsl #16
+    orr     w2, w2, w0
+    str     w2, [x1]
+    ret
+
+// ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-48]!
-    stp     x21, x22, [sp, #16]
-    stp     x23, x24, [sp, #32]
+    stp     x29, x30, [sp, #-80]!
+    stp     x19, x21, [sp, #16]
+    stp     x22, x23, [sp, #32]
+    stp     x24, x25, [sp, #48]
+    stp     x26, x27, [sp, #64]
 
+    // x19 = base del buffer (para calcular offsets)
+    mov     x19, x20
+
+    // Inicializar label_pos = -1
+    ldr     x0, =label_pos
+    mov     x1, #MAX_LABELS
+1:  mov     x2, #-1
+    str     x2, [x0], #8
+    subs    x1, x1, #1
+    b.ne    1b
+
+    ldr     x0, =pending_count
+    str     xzr, [x0]
     ldr     x0, =last_reg
     str     xzr, [x0]
 
@@ -184,17 +240,17 @@ recorrer_ir:
 
 ir_loop:
     cmp     x23, x22
-    b.ge    ir_fin
+    b.ge    ir_patch
 
     mov     x0, x23
     lsl     x0, x0, #3
     add     x0, x21, x0
 
-    ldrb    w1, [x0]                // op
-    ldrb    w2, [x0, #1]            // dest
-    ldrb    w3, [x0, #2]            // src1
-    ldrb    w4, [x0, #3]            // src2
-    ldrsw   x5, [x0, #4]            // imm
+    ldrb    w1, [x0]
+    ldrb    w2, [x0, #1]
+    ldrb    w3, [x0, #2]
+    ldrb    w4, [x0, #3]
+    ldrsw   x5, [x0, #4]
 
     cmp     w1, #OP_CONST
     b.eq    do_const
@@ -214,9 +270,16 @@ ir_loop:
     b.eq    do_neg
     cmp     w1, #OP_CMP
     b.eq    do_cmp
+    cmp     w1, #OP_LABEL
+    b.eq    do_label
+    cmp     w1, #OP_JMP
+    b.eq    do_jmp
+    cmp     w1, #OP_JZ
+    b.eq    do_jz
+    cmp     w1, #OP_JNZ
+    b.eq    do_jnz
     b       ir_next
 
-// OP_CONST dest = imm
 do_const:
     and     w1, w2, #0x7
     mov     w0, w5
@@ -226,11 +289,9 @@ do_const:
     str     x1, [x0]
     b       ir_next
 
-// OP_LOAD dest = slot[imm]
-// Mapeo estático: slot N → xN
 do_load:
-    and     w26, w5, #0x7           // reg del slot = slot % 8
-    and     w25, w2, #0x7           // dest
+    and     w26, w5, #0x7
+    and     w25, w2, #0x7
     cmp     w25, w26
     b.eq    1f
     mov     w0, w25
@@ -240,10 +301,9 @@ do_load:
     str     x25, [x0]
     b       ir_next
 
-// OP_STORE slot[imm] = src1
 do_store:
-    and     w25, w3, #0x7           // fuente
-    and     w26, w5, #0x7           // reg del slot = slot % 8
+    and     w25, w3, #0x7
+    and     w26, w5, #0x7
     cmp     w26, w25
     b.eq    1f
     mov     w0, w26
@@ -323,9 +383,116 @@ do_cmp:
     bl      emitir_cmp0
     b       ir_next
 
+// ── OP_LABEL imm = label_id ────────────────────────────────
+do_label:
+    // Guardar posición actual (offset desde base)
+    sub     x0, x20, x19
+    ldr     x1, =label_pos
+    // x5 = label_id
+    cmp     x5, #MAX_LABELS
+    b.hs    ir_next
+    str     x0, [x1, x5, lsl #3]
+    b       ir_next
+
+// ── OP_JMP imm = label_id ──────────────────────────────────
+do_jmp:
+    // Guardar pending
+    ldr     x0, =pending_count
+    ldr     x1, [x0]
+    cmp     x1, #MAX_LABELS
+    b.hs    ir_next
+    // pending_off[i] = posición actual del placeholder
+    sub     x2, x20, x19
+    ldr     x3, =pending_off
+    str     x2, [x3, x1, lsl #3]
+    // pending_lab[i] = label_id
+    ldr     x3, =pending_lab
+    str     x5, [x3, x1, lsl #3]
+    // pending_typ[i] = 0 (JMP)
+    ldr     x3, =pending_typ
+    str     xzr, [x3, x1, lsl #3]
+    add     x1, x1, #1
+    str     x1, [x0]
+    // Emitir placeholder
+    bl      emitir_b_placeholder
+    b       ir_next
+
+// ── OP_JZ imm = label_id ───────────────────────────────────
+do_jz:
+    ldr     x0, =pending_count
+    ldr     x1, [x0]
+    cmp     x1, #MAX_LABELS
+    b.hs    ir_next
+    sub     x2, x20, x19
+    ldr     x3, =pending_off
+    str     x2, [x3, x1, lsl #3]
+    ldr     x3, =pending_lab
+    str     x5, [x3, x1, lsl #3]
+    ldr     x3, =pending_typ
+    mov     x4, #1                  // tipo JZ
+    str     x4, [x3, x1, lsl #3]
+    add     x1, x1, #1
+    str     x1, [x0]
+    bl      emitir_beq_placeholder
+    b       ir_next
+
+// ── OP_JNZ (por ahora igual que JZ, se ajusta después) ─────
+do_jnz:
+    // Por simplicidad tratamos igual que JZ (se puede mejorar)
+    b       do_jz
+
 ir_next:
     add     x23, x23, #1
     b       ir_loop
+
+// ── Backpatch ──────────────────────────────────────────────
+ir_patch:
+    ldr     x0, =pending_count
+    ldr     x22, [x0]               // n pending
+    mov     x23, #0
+
+patch_loop:
+    cmp     x23, x22
+    b.ge    ir_fin
+
+    // offset del instr
+    ldr     x0, =pending_off
+    ldr     x24, [x0, x23, lsl #3]  // offset bytes del placeholder
+    // label_id
+    ldr     x0, =pending_lab
+    ldr     x25, [x0, x23, lsl #3]
+    // tipo
+    ldr     x0, =pending_typ
+    ldr     x26, [x0, x23, lsl #3]
+
+    // posición del label
+    cmp     x25, #MAX_LABELS
+    b.hs    patch_next
+    ldr     x0, =label_pos
+    ldr     x27, [x0, x25, lsl #3]  // offset del label
+    cmp     x27, #-1
+    b.eq    patch_next
+
+    // delta en bytes = label_pos - (placeholder_pos + 4)
+    // luego en instrucciones = delta / 4
+    add     x0, x24, #4
+    sub     x0, x27, x0
+    asr     x0, x0, #2              // instrucciones
+
+    // dirección del placeholder
+    add     x1, x19, x24
+
+    cmp     x26, #0
+    b.eq    do_patch_b
+    // JZ
+    bl      patch_beq
+    b       patch_next
+do_patch_b:
+    bl      patch_b
+
+patch_next:
+    add     x23, x23, #1
+    b       patch_loop
 
 ir_fin:
     // last_reg → x0
@@ -336,9 +503,11 @@ ir_fin:
     mov     w1, w1
     bl      emitir_mov_reg
 2:
-    ldp     x23, x24, [sp, #32]
-    ldp     x21, x22, [sp, #16]
-    ldp     x29, x30, [sp], #48
+    ldp     x26, x27, [sp, #64]
+    ldp     x24, x25, [sp, #48]
+    ldp     x22, x23, [sp, #32]
+    ldp     x19, x21, [sp, #16]
+    ldp     x29, x30, [sp], #80
     ret
 
 // ─────────────────────────────────────────────────────────────

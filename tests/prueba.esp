@@ -1,7 +1,4 @@
-sea cond = 1;
-si cond {
-  sea resultado = 42;
-}
-sino {
-  sea resultado = 7;
+sea i = 3;
+mientras i {
+  i = i - 1;
 }

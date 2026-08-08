@@ -5,7 +5,6 @@
 .equ AST_VAR_DECL,  100
 .equ AST_NODE_SIZE, 32
 .equ MAX_AST_NODES, 512
-
 .equ SLOT_SIZE,     32
 .equ MAX_SLOTS,     256
 
@@ -22,6 +21,11 @@
 .equ TOKEN_SLASH,   11
 .equ TOKEN_LPAREN,  12
 .equ TOKEN_RPAREN,  13
+.equ TOKEN_LBRACE,  14
+.equ TOKEN_RBRACE,  15
+.equ TOKEN_SI,      16
+.equ TOKEN_SINO,    17
+.equ TOKEN_MIENTRAS,18
 
 .section .bss
     .align 3
@@ -260,6 +264,135 @@ parse_expr:
     str     x0, [sp, #16]
     b       50b
 
+skip_block:
+    stp     x30, x23, [sp, #-16]!
+    bl      peek_type
+    cmp     w0, #TOKEN_LBRACE
+    b.ne    2f
+    bl      advance_token
+    mov     x23, #1
+1:  cbz     x23, 2f
+    bl      peek_type
+    cmp     w0, #TOKEN_EOF
+    b.eq    2f
+    cmp     w0, #TOKEN_LBRACE
+    b.ne    3f
+    add     x23, x23, #1
+    bl      advance_token
+    b       1b
+3:  cmp     w0, #TOKEN_RBRACE
+    b.ne    4f
+    sub     x23, x23, #1
+    bl      advance_token
+    b       1b
+4:  bl      advance_token
+    b       1b
+2:  ldp     x30, x23, [sp], #16
+    ret
+
+parse_one_decl:
+    stp     x30, xzr, [sp, #-16]!
+    bl      peek_type
+    mov     w27, w0
+    cmp     w0, #TOKEN_SEA
+    b.eq    1f
+    cmp     w0, #TOKEN_FIJO
+    b.eq    1f
+    mov     w0, #0
+    ldp     x30, xzr, [sp], #16
+    ret
+1:  bl      advance_token
+    bl      peek_type
+    cmp     w0, #TOKEN_IDENT
+    b.ne    9f
+    bl      current_ident_span
+    mov     w9, w0
+    mov     w10, w1
+    bl      advance_token
+    bl      peek_type
+    cmp     w0, #TOKEN_ASSIGN
+    b.ne    9f
+    bl      advance_token
+    bl      parse_expr
+    mov     x11, x0
+    bl      peek_type
+    cmp     w0, #TOKEN_SEMI
+    b.ne    2f
+    bl      advance_token
+2:  mov     w0, w9
+    mov     w1, w10
+    mov     w2, w27
+    mov     x3, x11
+    bl      register_slot
+    cmp     x22, #MAX_AST_NODES
+    b.ge    9f
+    mov     x0, x22
+    lsl     x0, x0, #5
+    add     x0, x21, x0
+    mov     w1, #AST_VAR_DECL
+    str     w1, [x0]
+    str     w27, [x0, #4]
+    str     w9, [x0, #8]
+    str     w10, [x0, #12]
+    str     x11, [x0, #16]
+    str     xzr, [x0, #24]
+    add     x22, x22, #1
+    mov     w0, #1
+    ldp     x30, xzr, [sp], #16
+    ret
+9:  mov     w0, #0
+    ldp     x30, xzr, [sp], #16
+    ret
+
+parse_block_active:
+    stp     x30, xzr, [sp, #-16]!
+    bl      peek_type
+    cmp     w0, #TOKEN_LBRACE
+    b.ne    9f
+    bl      advance_token
+1:  bl      peek_type
+    cmp     w0, #TOKEN_RBRACE
+    b.eq    2f
+    cmp     w0, #TOKEN_EOF
+    b.eq    9f
+    cmp     w0, #TOKEN_SEA
+    b.eq    3f
+    cmp     w0, #TOKEN_FIJO
+    b.eq    3f
+    bl      advance_token
+    b       1b
+3:  bl      parse_one_decl
+    b       1b
+2:  bl      advance_token
+    mov     w0, #1
+    ldp     x30, xzr, [sp], #16
+    ret
+9:  mov     w0, #0
+    ldp     x30, xzr, [sp], #16
+    ret
+
+parse_si:
+    stp     x30, xzr, [sp, #-32]!
+    bl      advance_token
+    bl      parse_expr
+    str     x0, [sp, #16]
+    ldr     x0, [sp, #16]
+    cbnz    x0, 1f
+    bl      skip_block
+    b       2f
+1:  bl      parse_block_active
+2:  bl      peek_type
+    cmp     w0, #TOKEN_SINO
+    b.ne    8f
+    bl      advance_token
+    ldr     x0, [sp, #16]
+    cbnz    x0, 3f
+    bl      parse_block_active
+    b       8f
+3:  bl      skip_block
+8:  ldp     x30, xzr, [sp], #32
+    ret
+
 iniciar_parser:
     stp     x19, x20, [sp, #-80]!
     stp     x21, x22, [sp, #16]
@@ -287,86 +420,29 @@ iniciar_parser:
     str     x0, [x1]
     mov     x21, x0
     mov     x22, #0
-    mov     x23, #0
+
+    ldr     x0, =expr_tok_idx
+    str     xzr, [x0]
 
 parser_loop:
-    cmp     x23, x20
-    b.ge    parser_fin
-    mov     x0, x23
-    lsl     x0, x0, #4
-    add     x0, x19, x0
-    ldr     w24, [x0]
-    cmp     w24, #TOKEN_EOF
+    bl      peek_type
+    cmp     w0, #TOKEN_EOF
     b.eq    parser_fin
-    cmp     w24, #TOKEN_SEA
-    b.eq    es_decl
-    cmp     w24, #TOKEN_FIJO
-    b.eq    es_decl
-    add     x23, x23, #1
+    cmp     w0, #TOKEN_SEA
+    b.eq    do_decl
+    cmp     w0, #TOKEN_FIJO
+    b.eq    do_decl
+    cmp     w0, #TOKEN_SI
+    b.eq    do_si
+    bl      advance_token
     b       parser_loop
 
-es_decl:
-    mov     w27, w24
-    add     x23, x23, #1
-    cmp     x23, x20
-    b.ge    parser_fin
-    mov     x0, x23
-    lsl     x0, x0, #4
-    add     x0, x19, x0
-    ldr     w24, [x0]
-    ldr     w25, [x0, #4]
-    ldr     w26, [x0, #8]
-    cmp     w24, #TOKEN_IDENT
-    b.ne    error_sintaxis
-    mov     w9, w25
-    mov     w10, w26
-    add     x23, x23, #1
-    cmp     x23, x20
-    b.ge    parser_fin
-    mov     x0, x23
-    lsl     x0, x0, #4
-    add     x0, x19, x0
-    ldr     w24, [x0]
-    cmp     w24, #TOKEN_ASSIGN
-    b.ne    error_sintaxis
-    add     x23, x23, #1
-    ldr     x0, =expr_tok_idx
-    str     x23, [x0]
-    bl      parse_expr
-    mov     x11, x0
-    ldr     x0, =expr_tok_idx
-    ldr     x23, [x0]
-    cmp     x23, x20
-    b.ge    1f
-    mov     x0, x23
-    lsl     x0, x0, #4
-    add     x0, x19, x0
-    ldr     w24, [x0]
-    cmp     w24, #TOKEN_SEMI
-    b.ne    1f
-    add     x23, x23, #1
-1:  mov     w0, w9
-    mov     w1, w10
-    mov     w2, w27
-    mov     x3, x11
-    bl      register_slot
-    cmp     x22, #MAX_AST_NODES
-    b.ge    parser_fin
-    mov     x0, x22
-    lsl     x0, x0, #5
-    add     x0, x21, x0
-    mov     w1, #AST_VAR_DECL
-    str     w1, [x0]
-    str     w27, [x0, #4]
-    str     w9, [x0, #8]
-    str     w10, [x0, #12]
-    str     x11, [x0, #16]
-    str     xzr, [x0, #24]
-    add     x22, x22, #1
+do_decl:
+    bl      parse_one_decl
     b       parser_loop
 
-error_sintaxis:
-    add     x23, x23, #1
+do_si:
+    bl      parse_si
     b       parser_loop
 
 parser_vacio:

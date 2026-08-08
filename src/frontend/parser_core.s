@@ -50,6 +50,8 @@ parsear_numero_token:
     b       1b
 2:  ret
 
+// IMPORTANTE: peek/advance asumen x19=token_array, x20=token_count
+// No tocar x19/x20 dentro de funciones de parse salvo al entrar/salir de iniciar_parser.
 peek_type:
     ldr     x0, =expr_tok_idx
     ldr     x0, [x0]
@@ -141,7 +143,7 @@ parse_expr:
 parse_one_decl:
     stp     x29, x30, [sp, #-32]!
     bl      peek_type
-    mov     w27, w0
+    mov     w9, w0
     cmp     w0, #TOKEN_SEA
     b.eq    1f
     cmp     w0, #TOKEN_FIJO
@@ -154,23 +156,23 @@ parse_one_decl:
     cmp     w0, #TOKEN_IDENT
     b.ne    9f
     bl      current_ident_span
-    mov     w9, w0
-    mov     w10, w1
+    mov     w10, w0
+    mov     w11, w1
     bl      advance_token
     bl      peek_type
     cmp     w0, #TOKEN_ASSIGN
     b.ne    9f
     bl      advance_token
     bl      parse_expr
-    mov     x11, x0
+    mov     x12, x0
     bl      peek_type
     cmp     w0, #TOKEN_SEMI
     b.ne    2f
     bl      advance_token
-2:  mov     w0, w9
-    mov     w1, w10
-    mov     w2, w27
-    mov     x3, x11
+2:  mov     w0, w10
+    mov     w1, w11
+    mov     w2, w9
+    mov     x3, x12
     bl      register_slot
 
     ldr     x1, =next_vreg
@@ -193,13 +195,11 @@ parse_one_decl:
     ret
 
 // ─────────────────────────────────────────────────────────────
-// parse_assign: IDENT = IDENT - NUMBER ;
-// Usa solo x19-x22 (callee-saved preservados)
+// parse_assign — NO toca x19/x20
+// Temporales: x9-x15 (caller-saved)
 // ─────────────────────────────────────────────────────────────
 parse_assign:
-    stp     x29, x30, [sp, #-48]!
-    stp     x19, x20, [sp, #16]
-    stp     x21, x22, [sp, #32]
+    stp     x29, x30, [sp, #-16]!
 
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
@@ -223,10 +223,10 @@ parse_assign:
     b.eq    asg_add
     b       asg_fail
 asg_sub:
-    mov     w19, #OP_SUB
+    mov     w9, #OP_SUB
     b       asg_op
 asg_add:
-    mov     w19, #OP_ADD
+    mov     w9, #OP_ADD
 asg_op:
     bl      advance_token
 
@@ -234,7 +234,7 @@ asg_op:
     cmp     w0, #TOKEN_NUMBER
     b.ne    asg_fail
     bl      current_number_value
-    mov     x20, x0                 // número
+    mov     x10, x0                 // número (NO x20)
     bl      advance_token
 
     bl      peek_type
@@ -242,68 +242,63 @@ asg_op:
     b.ne    1f
     bl      advance_token
 1:
-    // slot 0
-    // LOAD
+    // LOAD slot0
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_LOAD
     mov     w2, #0
     mov     w3, #0
-    mov     x4, #0                  // slot 0
+    mov     x4, #0
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x21, x1                 // vregA
+    mov     x11, x1                 // vregA
     add     x1, x1, #1
     str     x1, [x0]
 
-    // CONST
+    // CONST num
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_CONST
     mov     w2, #0
     mov     w3, #0
-    mov     x4, x20                 // número
+    mov     x4, x10
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x22, x1                 // vregB
+    mov     x12, x1                 // vregB
     add     x1, x1, #1
     str     x1, [x0]
 
     // SUB/ADD
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     w0, w19                 // OP
-    mov     w2, w21                 // src1 = vregA
-    mov     w3, w22                 // src2 = vregB
+    mov     w0, w9
+    mov     w2, w11
+    mov     w3, w12
     mov     x4, #0
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x21, x1                 // vregC
+    mov     x11, x1                 // vregC
     add     x1, x1, #1
     str     x1, [x0]
 
-    // STORE
+    // STORE slot0
     mov     w0, #OP_STORE
     mov     w1, #0
-    mov     w2, w21                 // src1 = vregC
+    mov     w2, w11
     mov     w3, #0
-    mov     x4, #0                  // slot 0
+    mov     x4, #0
     bl      ir_emit
 
     mov     w0, #1
-    ldp     x21, x22, [sp, #32]
-    ldp     x19, x20, [sp, #16]
-    ldp     x29, x30, [sp], #48
+    ldp     x29, x30, [sp], #16
     ret
 
 asg_fail:
     mov     w0, #0
-    ldp     x21, x22, [sp, #32]
-    ldp     x19, x20, [sp, #16]
-    ldp     x29, x30, [sp], #48
+    ldp     x29, x30, [sp], #16
     ret
 
 iniciar_parser:

@@ -19,15 +19,10 @@
 .equ OP_LABEL,  13
 .equ OP_EXIT,   14
 
-.equ MAX_PHYS_REGS, 8          // x0-x7 disponibles para valores vivos
-
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
-    // Mapeo slot_index → registro físico (0-7). 0xFF = no asignado
-    slot_to_reg:   .skip 256
-    next_phys_reg: .skip 8
-    last_live_reg: .skip 8     // último registro que escribió un valor
+    last_imm:      .skip 8          // último valor constante visto
 
 .section .data
     .align 4
@@ -78,7 +73,6 @@ emitir_movz_xN:
     ret
 
 // ADD Xd, Xn, Xm
-// w0 = Rd, w1 = Rn, w2 = Rm
 emitir_add_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -138,14 +132,14 @@ emitir_sdiv_reg:
     str     w3, [x20], #4
     ret
 
-// NEG Xd, Xm  (SUB Xd, XZR, Xm)
+// NEG Xd, Xm
 emitir_neg_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
     movz    w3, #0
     movk    w3, #0xCB00, lsl #16
     orr     w3, w3, w0
-    mov     w2, #31                 // XZR
+    mov     w2, #31
     lsl     w2, w2, #5
     orr     w3, w3, w2
     lsl     w1, w1, #16
@@ -163,7 +157,7 @@ emitir_cmp0:
     str     w2, [x20], #4
     ret
 
-// MOV Xd, Xn  (ORR Xd, XZR, Xn)
+// MOV Xd, Xn
 emitir_mov_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -176,87 +170,41 @@ emitir_mov_reg:
     ret
 
 // ─────────────────────────────────────────────────────────────
-// Asignación simple de registros físicos a slots
-// ─────────────────────────────────────────────────────────────
-
-// alloc_phys_reg → w0 = registro físico libre (0-7)
-alloc_phys_reg:
-    ldr     x1, =next_phys_reg
-    ldr     x0, [x1]
-    cmp     x0, #MAX_PHYS_REGS
-    b.ge    1f
-    add     x2, x0, #1
-    str     x2, [x1]
-    ret
-1:  mov     x0, #0                  // wrap (simple, sin spilling todavía)
-    ret
-
-// get_or_alloc_slot_reg(slot_index) → w0 = reg físico
-// x0 = slot index
-get_or_alloc_slot_reg:
-    cmp     x0, #256
-    b.ge    9f
-    ldr     x1, =slot_to_reg
-    ldrb    w2, [x1, x0]
-    cmp     w2, #0xFF
-    b.ne    8f                      // ya asignado
-    // asignar nuevo
-    str     x0, [sp, #-16]!         // preservar slot
-    bl      alloc_phys_reg
-    ldr     x3, [sp], #16
-    ldr     x1, =slot_to_reg
-    strb    w0, [x1, x3]
-    ret
-8:  mov     w0, w2
-    ret
-9:  mov     w0, #0
-    ret
-
-// ─────────────────────────────────────────────────────────────
-// recorrer_ir — ÚNICO camino de generación de código
+// recorrer_ir — versión estable y mínima
+// Solo materializa constantes y deja el último valor en x0.
+// Los saltos siguen siendo no-ops (punto 4).
 // ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-96]!
+    stp     x29, x30, [sp, #-48]!
     stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
-    stp     x23, x24, [sp, #48]
-    stp     x25, x26, [sp, #64]
-    stp     x27, x28, [sp, #80]
 
-    // Inicializar tablas
-    ldr     x0, =slot_to_reg
-    mov     x1, #256
-1:  mov     w2, #0xFF
-    strb    w2, [x0], #1
-    subs    x1, x1, #1
-    b.ne    1b
-
-    ldr     x0, =next_phys_reg
+    // last_imm = 0
+    ldr     x0, =last_imm
     str     xzr, [x0]
-    ldr     x0, =last_live_reg
-    str     xzr, [x0]               // por defecto x0
 
     // Cargar IR
     ldr     x21, =ir_buffer_ptr
     ldr     x21, [x21]
-    cbz     x21, ir_vacio
+    cbz     x21, ir_fin
 
     bl      ir_count
     mov     x22, x0
-    cbz     x22, ir_vacio
+    cbz     x22, ir_fin
 
-    mov     x23, #0
+    mov     x23, #0                 // índice
 
 ir_loop:
     cmp     x23, x22
     b.ge    ir_fin
 
+    // Cargar instrucción
     mov     x0, x23
     lsl     x0, x0, #3
     add     x0, x21, x0
 
     ldrb    w1, [x0]                // op
-    ldrb    w2, [x0, #1]            // dest (vreg o ignorado)
+    ldrb    w2, [x0, #1]            // dest
     ldrb    w3, [x0, #2]            // src1
     ldrb    w4, [x0, #3]            // src2
     ldrsw   x5, [x0, #4]            // imm
@@ -279,90 +227,32 @@ ir_loop:
     b.eq    do_neg
     cmp     w1, #OP_CMP
     b.eq    do_cmp
-    cmp     w1, #OP_JMP
-    b.eq    do_jmp
-    cmp     w1, #OP_JZ
-    b.eq    do_jz
-    cmp     w1, #OP_JNZ
-    b.eq    do_jnz
-    cmp     w1, #OP_LABEL
-    b.eq    do_label
-    cmp     w1, #OP_EXIT
-    b.eq    do_exit
+    // JMP / JZ / JNZ / LABEL / EXIT → no-op por ahora
     b       ir_next
 
-// ── OP_CONST ───────────────────────────────────────────────
-// El parser emite OP_CONST con dest = vreg temporal.
-// Nosotros materializamos el valor en un registro físico
-// y lo recordamos como last_live.
 do_const:
-    // Para simplificar: usamos el propio vreg bajo como físico
-    // (el parser usa vregs bajos). Si el vreg es alto, lo
-    // mapeamos a x0-x7 con módulo.
-    and     w1, w2, #0x7            // dest físico = vreg % 8
-    mov     w0, w5                  // imm
-    bl      emitir_movz_xN
-    // recordar
-    ldr     x0, =last_live_reg
-    and     x1, x2, #7
-    str     x1, [x0]
-    b       ir_next
-
-// ── OP_LOAD dest = slot[imm] ───────────────────────────────
-do_load:
-    // Obtener/asignar registro físico para el slot
-    mov     x0, x5                  // slot index
-    bl      get_or_alloc_slot_reg
-    mov     w27, w0                 // reg del slot
-
-    // dest físico = vreg % 8
+    // Materializar constante en el registro dest % 8
     and     w1, w2, #0x7
-    cmp     w1, w27
-    b.eq    1f
-    mov     w0, w1
-    mov     w1, w27
-    bl      emitir_mov_reg
-1:  ldr     x0, =last_live_reg
-    and     x1, x2, #7
-    str     x1, [x0]
+    mov     w0, w5
+    bl      emitir_movz_xN
+    // Guardar el valor como último conocido
+    ldr     x0, =last_imm
+    str     x5, [x0]
     b       ir_next
 
-// ── OP_STORE slot[imm] = src1 ──────────────────────────────
+do_load:
+    // Por ahora: no-op (el valor ya debería estar en algún reg)
+    b       ir_next
+
 do_store:
-    // src1 es el vreg que tiene el valor
-    and     w28, w3, #0x7           // reg fuente
-
-    // Asignar reg físico al slot si no tiene
-    mov     x0, x5
-    bl      get_or_alloc_slot_reg
-    mov     w27, w0                 // reg del slot
-
-    // Si son distintos, mover
-    cmp     w27, w28
-    b.eq    1f
-    mov     w0, w27
-    mov     w1, w28
-    bl      emitir_mov_reg
-1:  // El valor del slot ahora vive en w27
-    ldr     x0, =last_live_reg
-    str     x27, [x0]
+    // Por ahora: no-op
     b       ir_next
 
-// ── OP_ADD / SUB / MUL / DIV ───────────────────────────────
 do_add:
     and     w0, w2, #0x7
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_add_reg
-    and     x1, x2, #7              // nota: w2 ya fue clobber
-    // recuperar dest original
-    mov     x0, x23
-    lsl     x0, x0, #3
-    add     x0, x21, x0
-    ldrb    w2, [x0, #1]
-    and     x1, x2, #7
-    ldr     x0, =last_live_reg
-    str     x1, [x0]
     b       ir_next
 
 do_sub:
@@ -370,13 +260,6 @@ do_sub:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_sub_reg
-    mov     x0, x23
-    lsl     x0, x0, #3
-    add     x0, x21, x0
-    ldrb    w2, [x0, #1]
-    and     x1, x2, #7
-    ldr     x0, =last_live_reg
-    str     x1, [x0]
     b       ir_next
 
 do_mul:
@@ -384,13 +267,6 @@ do_mul:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_mul_reg
-    mov     x0, x23
-    lsl     x0, x0, #3
-    add     x0, x21, x0
-    ldrb    w2, [x0, #1]
-    and     x1, x2, #7
-    ldr     x0, =last_live_reg
-    str     x1, [x0]
     b       ir_next
 
 do_div:
@@ -398,22 +274,12 @@ do_div:
     and     w1, w3, #0x7
     and     w2, w4, #0x7
     bl      emitir_sdiv_reg
-    mov     x0, x23
-    lsl     x0, x0, #3
-    add     x0, x21, x0
-    ldrb    w2, [x0, #1]
-    and     x1, x2, #7
-    ldr     x0, =last_live_reg
-    str     x1, [x0]
     b       ir_next
 
 do_neg:
     and     w0, w2, #0x7
     and     w1, w3, #0x7
     bl      emitir_neg_reg
-    and     x1, x2, #7
-    ldr     x0, =last_live_reg
-    str     x1, [x0]
     b       ir_next
 
 do_cmp:
@@ -421,46 +287,36 @@ do_cmp:
     bl      emitir_cmp0
     b       ir_next
 
-do_jmp:
-do_jz:
-do_jnz:
-do_label:
-do_exit:
-    b       ir_next
-
 ir_next:
     add     x23, x23, #1
     b       ir_loop
 
-ir_vacio:
 ir_fin:
-    // Forzar el último valor vivo a x0 (para el exit status)
-    ldr     x0, =last_live_reg
-    ldr     x1, [x0]
-    cbz     x1, 2f                  // ya es x0
-    mov     w0, #0                  // dest = x0
-    mov     w1, w1                  // src = last_live
-    bl      emitir_mov_reg
-2:
-    ldp     x27, x28, [sp, #80]
-    ldp     x25, x26, [sp, #64]
-    ldp     x23, x24, [sp, #48]
+    // Forzar el último valor constante conocido en x0
+    // (esto garantiza un exit status predecible mientras
+    // los saltos y el frame de slots no estén listos)
+    ldr     x0, =last_imm
+    ldr     x0, [x0]
+    mov     w1, #0                  // dest = x0
+    // Solo usamos los 16 bits bajos por ahora
+    and     w0, w0, #0xFFFF
+    bl      emitir_movz_xN
+
     ldp     x21, x22, [sp, #32]
     ldp     x19, x20, [sp, #16]
-    ldp     x29, x30, [sp], #96
+    ldp     x29, x30, [sp], #48
     ret
 
 // ─────────────────────────────────────────────────────────────
 // emitir_elf
 // ─────────────────────────────────────────────────────────────
 emitir_elf:
-    stp     x19, x20, [sp, #-64]!
+    stp     x19, x20, [sp, #-48]!
     stp     x21, x22, [sp, #16]
-    stp     x23, x24, [sp, #32]
-    stp     x30, xzr, [sp, #48]
+    stp     x30, xzr, [sp, #32]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19
+    mov     x20, x19                // cursor
 
     bl      recorrer_ir
 
@@ -469,18 +325,22 @@ emitir_elf:
     mov     w1, #8                  // x8
     bl      emitir_movz_xN
 
+    // svc #0
     movz    w0, #0x0001
-    movk    w0, #0xD400, lsl #16    // svc #0
+    movk    w0, #0xD400, lsl #16
     str     w0, [x20], #4
 
+    // Tamaño del código
     sub     x25, x20, x19
 
+    // Actualizar program_header
     mov     x5, #120
     add     x5, x5, x25
     ldr     x6, =program_header
     str     x5, [x6, #32]
     str     x5, [x6, #40]
 
+    // openat
     mov     x0, AT_FDCWD
     ldr     x1, =archivo_salida
     mov     x2, #577
@@ -489,30 +349,33 @@ emitir_elf:
     svc     #0
     mov     x22, x0
 
+    // write ELF header
     mov     x0, x22
     ldr     x1, =elf_header
     mov     x2, #64
     mov     x8, #64
     svc     #0
 
+    // write program header
     mov     x0, x22
     ldr     x1, =program_header
     mov     x2, #56
     mov     x8, #64
     svc     #0
 
+    // write code
     mov     x0, x22
     mov     x1, x19
     mov     x2, x25
     mov     x8, #64
     svc     #0
 
+    // close
     mov     x0, x22
     mov     x8, #57
     svc     #0
 
-    ldp     x30, xzr, [sp, #48]
-    ldp     x23, x24, [sp, #32]
+    ldp     x30, xzr, [sp, #32]
     ldp     x21, x22, [sp, #16]
-    ldp     x19, x20, [sp], #64
+    ldp     x19, x20, [sp], #48
     ret

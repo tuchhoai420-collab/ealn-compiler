@@ -58,7 +58,6 @@ parsear_numero_token:
     b       1b
 2:  ret
 
-// IMPORTANTE: peek/advance asumen x19=token_array, x20=token_count
 peek_type:
     ldr     x0, =expr_tok_idx
     ldr     x0, [x0]
@@ -201,9 +200,6 @@ parse_one_decl:
     ldp     x29, x30, [sp], #32
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_assign — NO toca x19/x20
-// ─────────────────────────────────────────────────────────────
 parse_assign:
     stp     x29, x30, [sp, #-16]!
 
@@ -248,7 +244,6 @@ asg_op:
     b.ne    1f
     bl      advance_token
 1:
-    // LOAD slot0
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_LOAD
@@ -262,7 +257,6 @@ asg_op:
     add     x1, x1, #1
     str     x1, [x0]
 
-    // CONST num
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_CONST
@@ -276,7 +270,6 @@ asg_op:
     add     x1, x1, #1
     str     x1, [x0]
 
-    // SUB/ADD
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, w9
@@ -290,7 +283,6 @@ asg_op:
     add     x1, x1, #1
     str     x1, [x0]
 
-    // STORE slot0
     mov     w0, #OP_STORE
     mov     w1, #0
     mov     w2, w11
@@ -307,48 +299,33 @@ asg_fail:
     ldp     x29, x30, [sp], #16
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_mientras — versión mínima y segura
-// mientras IDENT { assign }
-// Emite:
-//   LABEL L_inicio
-//   LOAD slot0 → vreg
-//   CMP vreg, #0
-//   JZ L_fin
-//   <cuerpo>
-//   JMP L_inicio
-//   LABEL L_fin
-// ─────────────────────────────────────────────────────────────
+// DIAGNÓSTICO: sin JMP (se comporta como if de una sola pasada)
 parse_mientras:
     stp     x29, x30, [sp, #-48]!
-    stp     x19, x20, [sp, #16]     // guardar (aunque no los tocamos)
+    stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
 
-    // consumir 'mientras'
     bl      advance_token
 
-    // condición debe ser IDENT (solo slot 0 por ahora)
     bl      peek_type
     cmp     w0, #TOKEN_IDENT
     b.ne    mien_fail
     bl      advance_token
 
-    // esperar '{'
     bl      peek_type
     cmp     w0, #TOKEN_LBRACE
     b.ne    mien_fail
     bl      advance_token
 
-    // crear dos labels
     ldr     x0, =next_label
     ldr     x1, [x0]
-    mov     x21, x1                 // L_inicio
+    mov     x21, x1                 // L_inicio (no se usa ahora)
     add     x1, x1, #1
     mov     x22, x1                 // L_fin
     add     x1, x1, #1
     str     x1, [x0]
 
-    // LABEL L_inicio
+    // LABEL L_inicio (mantenemos por si acaso)
     mov     w0, #OP_LABEL
     mov     w1, #0
     mov     w2, #0
@@ -356,24 +333,22 @@ parse_mientras:
     mov     x4, x21
     bl      ir_emit
 
-    // LOAD slot0 → nuevo vreg
+    // LOAD + CMP (el emitter fuerza CMP x0)
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_LOAD
-    mov     w2, #0                  // dest vreg
+    mov     w2, #0
     mov     w3, #0
-    mov     x4, #0                  // slot 0
+    mov     x4, #0
     bl      ir_emit
     ldr     x0, =next_vreg
     ldr     x1, [x0]
-    mov     x9, x1                  // vreg de la condición
     add     x1, x1, #1
     str     x1, [x0]
 
-    // CMP vreg, #0
     mov     w0, #OP_CMP
     mov     w1, #0
-    mov     w2, w9                  // src1 = vreg
+    mov     w2, #0
     mov     w3, #0
     mov     x4, #0
     bl      ir_emit
@@ -386,17 +361,10 @@ parse_mientras:
     mov     x4, x22
     bl      ir_emit
 
-    // cuerpo: solo un assign por ahora
+    // cuerpo
     bl      parse_assign
-    // ignoramos el resultado (si falla, el programa se detiene de todos modos)
 
-    // JMP L_inicio
-    mov     w0, #OP_JMP
-    mov     w1, #0
-    mov     w2, #0
-    mov     w3, #0
-    mov     x4, x21
-    bl      ir_emit
+    // *** JMP eliminado temporalmente para diagnóstico ***
 
     // LABEL L_fin
     mov     w0, #OP_LABEL
@@ -406,7 +374,6 @@ parse_mientras:
     mov     x4, x22
     bl      ir_emit
 
-    // esperar '}'
     bl      peek_type
     cmp     w0, #TOKEN_RBRACE
     b.ne    mien_fail

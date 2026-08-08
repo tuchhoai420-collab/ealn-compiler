@@ -19,9 +19,15 @@
 .equ OP_LABEL,  13
 .equ OP_EXIT,   14
 
+.equ MAX_PHYS_REGS, 8          // x0-x7 disponibles para valores vivos
+
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
+    // Mapeo slot_index → registro físico (0-7). 0xFF = no asignado
+    slot_to_reg:   .skip 256
+    next_phys_reg: .skip 8
+    last_live_reg: .skip 8     // último registro que escribió un valor
 
 .section .data
     .align 4
@@ -170,17 +176,65 @@ emitir_mov_reg:
     ret
 
 // ─────────────────────────────────────────────────────────────
+// Asignación simple de registros físicos a slots
+// ─────────────────────────────────────────────────────────────
+
+// alloc_phys_reg → w0 = registro físico libre (0-7)
+alloc_phys_reg:
+    ldr     x1, =next_phys_reg
+    ldr     x0, [x1]
+    cmp     x0, #MAX_PHYS_REGS
+    b.ge    1f
+    add     x2, x0, #1
+    str     x2, [x1]
+    ret
+1:  mov     x0, #0                  // wrap (simple, sin spilling todavía)
+    ret
+
+// get_or_alloc_slot_reg(slot_index) → w0 = reg físico
+// x0 = slot index
+get_or_alloc_slot_reg:
+    cmp     x0, #256
+    b.ge    9f
+    ldr     x1, =slot_to_reg
+    ldrb    w2, [x1, x0]
+    cmp     w2, #0xFF
+    b.ne    8f                      // ya asignado
+    // asignar nuevo
+    str     x0, [sp, #-16]!         // preservar slot
+    bl      alloc_phys_reg
+    ldr     x3, [sp], #16
+    ldr     x1, =slot_to_reg
+    strb    w0, [x1, x3]
+    ret
+8:  mov     w0, w2
+    ret
+9:  mov     w0, #0
+    ret
+
+// ─────────────────────────────────────────────────────────────
 // recorrer_ir — ÚNICO camino de generación de código
-// Recorre el buffer de IR denso y emite opcodes AArch64.
-// x19 = base opcode_buffer (se preserva)
-// x20 = cursor de escritura
 // ─────────────────────────────────────────────────────────────
 recorrer_ir:
-    stp     x29, x30, [sp, #-80]!
+    stp     x29, x30, [sp, #-96]!
     stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
     stp     x23, x24, [sp, #48]
     stp     x25, x26, [sp, #64]
+    stp     x27, x28, [sp, #80]
+
+    // Inicializar tablas
+    ldr     x0, =slot_to_reg
+    mov     x1, #256
+1:  mov     w2, #0xFF
+    strb    w2, [x0], #1
+    subs    x1, x1, #1
+    b.ne    1b
+
+    ldr     x0, =next_phys_reg
+    str     xzr, [x0]
+    ldr     x0, =last_live_reg
+    str     xzr, [x0]               // por defecto x0
 
     // Cargar IR
     ldr     x21, =ir_buffer_ptr
@@ -188,27 +242,25 @@ recorrer_ir:
     cbz     x21, ir_vacio
 
     bl      ir_count
-    mov     x22, x0                 // n instrucciones
+    mov     x22, x0
     cbz     x22, ir_vacio
 
-    mov     x23, #0                 // índice
+    mov     x23, #0
 
 ir_loop:
     cmp     x23, x22
     b.ge    ir_fin
 
-    // Cargar Instr (8 bytes)
     mov     x0, x23
     lsl     x0, x0, #3
     add     x0, x21, x0
 
     ldrb    w1, [x0]                // op
-    ldrb    w2, [x0, #1]            // dest
+    ldrb    w2, [x0, #1]            // dest (vreg o ignorado)
     ldrb    w3, [x0, #2]            // src1
     ldrb    w4, [x0, #3]            // src2
-    ldrsw   x5, [x0, #4]            // imm (sign-extended)
+    ldrsw   x5, [x0, #4]            // imm
 
-    // Despacho
     cmp     w1, #OP_CONST
     b.eq    do_const
     cmp     w1, #OP_LOAD
@@ -237,88 +289,142 @@ ir_loop:
     b.eq    do_label
     cmp     w1, #OP_EXIT
     b.eq    do_exit
-
-    // op desconocido → ignorar
     b       ir_next
 
-// ── OP_CONST dest = imm ────────────────────────────────────
+// ── OP_CONST ───────────────────────────────────────────────
+// El parser emite OP_CONST con dest = vreg temporal.
+// Nosotros materializamos el valor en un registro físico
+// y lo recordamos como last_live.
 do_const:
-    // Solo imm16 por ahora (valores pequeños)
-    mov     w0, w5
-    mov     w1, w2
+    // Para simplificar: usamos el propio vreg bajo como físico
+    // (el parser usa vregs bajos). Si el vreg es alto, lo
+    // mapeamos a x0-x7 con módulo.
+    and     w1, w2, #0x7            // dest físico = vreg % 8
+    mov     w0, w5                  // imm
     bl      emitir_movz_xN
+    // recordar
+    ldr     x0, =last_live_reg
+    and     x1, x2, #7
+    str     x1, [x0]
     b       ir_next
 
 // ── OP_LOAD dest = slot[imm] ───────────────────────────────
-// Temporal: tratamos el índice de slot como registro físico
-// (hasta que exista frame de slots real)
 do_load:
-    and     w0, w2, #0x1F           // dest
-    and     w1, w5, #0x1F           // "slot" como reg temporal
-    cmp     w0, w1
-    b.eq    ir_next                 // ya está en el mismo reg
+    // Obtener/asignar registro físico para el slot
+    mov     x0, x5                  // slot index
+    bl      get_or_alloc_slot_reg
+    mov     w27, w0                 // reg del slot
+
+    // dest físico = vreg % 8
+    and     w1, w2, #0x7
+    cmp     w1, w27
+    b.eq    1f
+    mov     w0, w1
+    mov     w1, w27
     bl      emitir_mov_reg
+1:  ldr     x0, =last_live_reg
+    and     x1, x2, #7
+    str     x1, [x0]
     b       ir_next
 
 // ── OP_STORE slot[imm] = src1 ──────────────────────────────
-// Temporal: no-op (el valor ya vive en el registro del slot)
 do_store:
+    // src1 es el vreg que tiene el valor
+    and     w28, w3, #0x7           // reg fuente
+
+    // Asignar reg físico al slot si no tiene
+    mov     x0, x5
+    bl      get_or_alloc_slot_reg
+    mov     w27, w0                 // reg del slot
+
+    // Si son distintos, mover
+    cmp     w27, w28
+    b.eq    1f
+    mov     w0, w27
+    mov     w1, w28
+    bl      emitir_mov_reg
+1:  // El valor del slot ahora vive en w27
+    ldr     x0, =last_live_reg
+    str     x27, [x0]
     b       ir_next
 
-// ── OP_ADD dest = src1 + src2 ──────────────────────────────
+// ── OP_ADD / SUB / MUL / DIV ───────────────────────────────
 do_add:
-    mov     w0, w2
-    mov     w1, w3
-    mov     w2, w4
+    and     w0, w2, #0x7
+    and     w1, w3, #0x7
+    and     w2, w4, #0x7
     bl      emitir_add_reg
+    and     x1, x2, #7              // nota: w2 ya fue clobber
+    // recuperar dest original
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w2, [x0, #1]
+    and     x1, x2, #7
+    ldr     x0, =last_live_reg
+    str     x1, [x0]
     b       ir_next
 
-// ── OP_SUB dest = src1 - src2 ──────────────────────────────
 do_sub:
-    mov     w0, w2
-    mov     w1, w3
-    mov     w2, w4
+    and     w0, w2, #0x7
+    and     w1, w3, #0x7
+    and     w2, w4, #0x7
     bl      emitir_sub_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w2, [x0, #1]
+    and     x1, x2, #7
+    ldr     x0, =last_live_reg
+    str     x1, [x0]
     b       ir_next
 
-// ── OP_MUL dest = src1 * src2 ──────────────────────────────
 do_mul:
-    mov     w0, w2
-    mov     w1, w3
-    mov     w2, w4
+    and     w0, w2, #0x7
+    and     w1, w3, #0x7
+    and     w2, w4, #0x7
     bl      emitir_mul_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w2, [x0, #1]
+    and     x1, x2, #7
+    ldr     x0, =last_live_reg
+    str     x1, [x0]
     b       ir_next
 
-// ── OP_DIV dest = src1 / src2 ──────────────────────────────
 do_div:
-    mov     w0, w2
-    mov     w1, w3
-    mov     w2, w4
+    and     w0, w2, #0x7
+    and     w1, w3, #0x7
+    and     w2, w4, #0x7
     bl      emitir_sdiv_reg
+    mov     x0, x23
+    lsl     x0, x0, #3
+    add     x0, x21, x0
+    ldrb    w2, [x0, #1]
+    and     x1, x2, #7
+    ldr     x0, =last_live_reg
+    str     x1, [x0]
     b       ir_next
 
-// ── OP_NEG dest = -src1 ────────────────────────────────────
 do_neg:
-    mov     w0, w2
-    mov     w1, w3
+    and     w0, w2, #0x7
+    and     w1, w3, #0x7
     bl      emitir_neg_reg
+    and     x1, x2, #7
+    ldr     x0, =last_live_reg
+    str     x1, [x0]
     b       ir_next
 
-// ── OP_CMP src1 , #0 ───────────────────────────────────────
 do_cmp:
-    mov     w0, w3
+    and     w0, w3, #0x7
     bl      emitir_cmp0
     b       ir_next
 
-// ── Saltos y labels (placeholders por ahora) ───────────────
-// El backpatch real llega en el punto 4 del plan.
 do_jmp:
 do_jz:
 do_jnz:
 do_label:
-    b       ir_next
-
-// ── OP_EXIT ────────────────────────────────────────────────
 do_exit:
     b       ir_next
 
@@ -328,16 +434,24 @@ ir_next:
 
 ir_vacio:
 ir_fin:
+    // Forzar el último valor vivo a x0 (para el exit status)
+    ldr     x0, =last_live_reg
+    ldr     x1, [x0]
+    cbz     x1, 2f                  // ya es x0
+    mov     w0, #0                  // dest = x0
+    mov     w1, w1                  // src = last_live
+    bl      emitir_mov_reg
+2:
+    ldp     x27, x28, [sp, #80]
     ldp     x25, x26, [sp, #64]
     ldp     x23, x24, [sp, #48]
     ldp     x21, x22, [sp, #32]
     ldp     x19, x20, [sp, #16]
-    ldp     x29, x30, [sp], #80
+    ldp     x29, x30, [sp], #96
     ret
 
 // ─────────────────────────────────────────────────────────────
-// emitir_elf — punto de entrada del backend
-// Ahora SOLO usa el camino IR.
+// emitir_elf
 // ─────────────────────────────────────────────────────────────
 emitir_elf:
     stp     x19, x20, [sp, #-64]!
@@ -346,65 +460,55 @@ emitir_elf:
     stp     x30, xzr, [sp, #48]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19                // cursor
+    mov     x20, x19
 
-    // Único camino de generación
     bl      recorrer_ir
 
-    // Epílogo: exit syscall
-    // x0 se deja con el último valor vivo (o 0 si no hubo nada)
+    // Epílogo: exit(x0)
     mov     w0, #93                 // SYS_exit
     mov     w1, #8                  // x8
     bl      emitir_movz_xN
 
-    // svc #0
     movz    w0, #0x0001
-    movk    w0, #0xD400, lsl #16
+    movk    w0, #0xD400, lsl #16    // svc #0
     str     w0, [x20], #4
 
-    // Calcular tamaño del código generado
     sub     x25, x20, x19
 
-    // Actualizar program_header (p_filesz / p_memsz)
-    mov     x5, #120                // tamaño headers
+    mov     x5, #120
     add     x5, x5, x25
     ldr     x6, =program_header
-    str     x5, [x6, #32]           // p_filesz
-    str     x5, [x6, #40]           // p_memsz
+    str     x5, [x6, #32]
+    str     x5, [x6, #40]
 
-    // openat(AT_FDCWD, "salida.out", O_CREAT|O_WRONLY|O_TRUNC, 0755)
     mov     x0, AT_FDCWD
     ldr     x1, =archivo_salida
-    mov     x2, #577                // O_CREAT|O_WRONLY|O_TRUNC
-    mov     x3, #493                // 0755
-    mov     x8, #56                 // openat
+    mov     x2, #577
+    mov     x3, #493
+    mov     x8, #56
     svc     #0
-    mov     x22, x0                 // fd
+    mov     x22, x0
 
-    // write ELF header
     mov     x0, x22
     ldr     x1, =elf_header
     mov     x2, #64
-    mov     x8, #64                 // write
+    mov     x8, #64
     svc     #0
 
-    // write program header
     mov     x0, x22
     ldr     x1, =program_header
     mov     x2, #56
     mov     x8, #64
     svc     #0
 
-    // write código
     mov     x0, x22
     mov     x1, x19
     mov     x2, x25
     mov     x8, #64
     svc     #0
 
-    // close
     mov     x0, x22
-    mov     x8, #57                 // close
+    mov     x8, #57
     svc     #0
 
     ldp     x30, xzr, [sp, #48]

@@ -105,7 +105,6 @@ emitir_sub_reg:
     str     w3, [x20], #4
     ret
 
-// CMP Xn, #0
 emitir_cmp_zero:
     and     w1, w1, #0x1F
     movz    w3, #0x001F
@@ -127,13 +126,11 @@ emitir_b_placeholder:
     ret
 
 registrar_label:
-    // w0 = label_id
     and     x2, x0, #0x3F
     ldr     x3, =opcode_buffer
     sub     x4, x20, x3
     ldr     x5, =label_pos
     str     x4, [x5, x2, lsl #3]
-    // mantener label_count como max+1
     ldr     x1, =label_count
     ldr     x6, [x1]
     cmp     x2, x6
@@ -175,16 +172,18 @@ parch_loop:
 
     ldr     x1, =patch_list
     add     x1, x1, x20, lsl #4
-    ldr     x2, [x1]
-    ldr     w3, [x1, #8]
-    ldr     w4, [x1, #12]
+    ldr     x2, [x1]                // offset de la instrucción
+    ldr     w3, [x1, #8]            // label_id
+    ldr     w4, [x1, #12]           // tipo
 
     ldr     x5, =label_pos
     and     x3, x3, #0x3F
-    ldr     x6, [x5, x3, lsl #3]
+    ldr     x6, [x5, x3, lsl #3]    // pos_label
 
+    // delta en bytes = pos_label - (offset + 4)
     add     x7, x2, #4
     sub     x8, x6, x7
+    // delta en instrucciones (signed)
     asr     x8, x8, #2
 
     ldr     x9, =opcode_buffer
@@ -193,6 +192,8 @@ parch_loop:
     cmp     w4, #0
     b.ne    parch_cond
 
+    // B incondicional: imm26 (signed, 26 bits)
+    // Tomamos los 26 bits bajos del valor signed
     and     w8, w8, #0x03FFFFFF
     movz    w10, #0x0000
     movk    w10, #0x1400, lsl #16
@@ -201,6 +202,7 @@ parch_loop:
     b       parch_next
 
 parch_cond:
+    // B.EQ: imm19 (signed) en bits 23:5
     and     w8, w8, #0x7FFFF
     lsl     w8, w8, #5
     movz    w10, #0x0000
@@ -337,8 +339,7 @@ do_sub:
     b       ir_next
 
 do_cmp:
-    // FORZADO para el caso mínimo: siempre CMP x0, #0
-    // (slot 0 vive en x0 y es el que el assign actualiza)
+    // Forzado a x0 para el caso de una sola variable
     mov     w1, #0
     bl      emitir_cmp_zero
     b       ir_next

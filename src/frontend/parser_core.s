@@ -299,7 +299,6 @@ asg_fail:
     ldp     x29, x30, [sp], #16
     ret
 
-// DIAGNÓSTICO: sin JMP (se comporta como if de una sola pasada)
 parse_mientras:
     stp     x29, x30, [sp, #-48]!
     stp     x19, x20, [sp, #16]
@@ -319,13 +318,13 @@ parse_mientras:
 
     ldr     x0, =next_label
     ldr     x1, [x0]
-    mov     x21, x1                 // L_inicio (no se usa ahora)
+    mov     x21, x1                 // L_inicio
     add     x1, x1, #1
     mov     x22, x1                 // L_fin
     add     x1, x1, #1
     str     x1, [x0]
 
-    // LABEL L_inicio (mantenemos por si acaso)
+    // LABEL L_inicio
     mov     w0, #OP_LABEL
     mov     w1, #0
     mov     w2, #0
@@ -333,7 +332,7 @@ parse_mientras:
     mov     x4, x21
     bl      ir_emit
 
-    // LOAD + CMP (el emitter fuerza CMP x0)
+    // LOAD + CMP (emitter fuerza CMP x0)
     ldr     x0, =next_vreg
     ldr     x1, [x0]
     mov     w0, #OP_LOAD
@@ -364,7 +363,13 @@ parse_mientras:
     // cuerpo
     bl      parse_assign
 
-    // *** JMP eliminado temporalmente para diagnóstico ***
+    // JMP L_inicio (restaurado)
+    mov     w0, #OP_JMP
+    mov     w1, #0
+    mov     w2, #0
+    mov     w3, #0
+    mov     x4, x21
+    bl      ir_emit
 
     // LABEL L_fin
     mov     w0, #OP_LABEL

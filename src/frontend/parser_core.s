@@ -270,25 +270,38 @@ parse_factor:
     ldp     x30, xzr, [sp], #32
     ret
 
+// IDENT → OP_LOAD con índice real de slot
 15: bl      current_ident_span
     mov     w9, w0
     mov     w10, w1
+    // obtener índice del slot
+    mov     x0, x9
+    mov     x1, x10
+    bl      lookup_slot_index
+    str     x0, [sp, #16]               // slot index (o -1)
+    // obtener valor (comportamiento viejo)
+    mov     x0, x9
+    mov     x1, x10
     bl      lookup_slot
-    str     x0, [sp, #16]
+    str     x0, [sp, #24]               // valor
     bl      advance_token
+
+    // emitir OP_LOAD (imm = slot index real)
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_LOAD
-    mov     w1, w2
+    mov     w1, w2                      // dest = vreg
     mov     w2, #0
     mov     w3, #0
-    mov     x4, #0
+    ldr     x4, [sp, #16]               // imm = slot index
     bl      ir_emit
+
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     add     x2, x2, #1
     str     x2, [x1]
-    ldr     x0, [sp, #16]
+
+    ldr     x0, [sp, #24]               // devolver valor
     ldp     x30, xzr, [sp], #32
     ret
 
@@ -440,7 +453,7 @@ append_node:
     ret
 
 parse_one_decl:
-    stp     x30, xzr, [sp, #-16]!
+    stp     x30, xzr, [sp, #-32]!
     bl      peek_type
     mov     w27, w0
     cmp     w0, #TOKEN_SEA
@@ -448,7 +461,7 @@ parse_one_decl:
     cmp     w0, #TOKEN_FIJO
     b.eq    1f
     mov     w0, #0
-    ldp     x30, xzr, [sp], #16
+    ldp     x30, xzr, [sp], #32
     ret
 1:  bl      advance_token
     bl      peek_type
@@ -473,15 +486,24 @@ parse_one_decl:
     mov     w2, w27
     mov     x3, x11
     bl      register_slot
+
+    // slot index = slot_count - 1
+    ldr     x0, =slot_count
+    ldr     x0, [x0]
+    sub     x0, x0, #1
+    str     x0, [sp, #16]               // slot index real
+
+    // OP_STORE: src1 = último vreg, imm = slot index
     ldr     x1, =next_vreg
     ldr     x2, [x1]
-    sub     x2, x2, #1
+    sub     x2, x2, #1                  // vreg del valor
     mov     w0, #OP_STORE
     mov     w1, #0
-    mov     w2, w2
+    mov     w2, w2                      // src1 = vreg
     mov     w3, #0
-    mov     x4, #0
+    ldr     x4, [sp, #16]               // imm = slot index
     bl      ir_emit
+
     mov     w0, #AST_VAR_DECL
     mov     w1, w27
     mov     w2, w9
@@ -489,10 +511,10 @@ parse_one_decl:
     mov     x4, x11
     bl      append_node
     mov     w0, #1
-    ldp     x30, xzr, [sp], #16
+    ldp     x30, xzr, [sp], #32
     ret
 9:  mov     w0, #0
-    ldp     x30, xzr, [sp], #16
+    ldp     x30, xzr, [sp], #32
     ret
 
 parse_assign:
@@ -537,7 +559,7 @@ parse_assign:
     bl      lookup_slot_index
     cmp     x0, #-1
     b.eq    5f
-    mov     x17, x0
+    mov     x17, x0                     // slot index real
     mov     w0, w12
     mov     w1, w13
     bl      lookup_slot
@@ -549,14 +571,15 @@ parse_assign:
 7:  mov     x1, x0
     mov     x0, x17
     bl      update_slot_value
-    ldr     x1, =next_vreg
-    ldr     x2, [x1]
+
+    // OP_STORE con índice real
     mov     w0, #OP_STORE
     mov     w1, #0
     mov     w2, #0
     mov     w3, #0
-    mov     x4, #0
+    mov     x4, x17                     // imm = slot index
     bl      ir_emit
+
 5:  mov     w0, #AST_ASSIGN
     mov     w1, w16
     mov     w2, w12
@@ -649,17 +672,6 @@ parse_si:
 8:  ldp     x30, xzr, [sp], #32
     ret
 
-// ─────────────────────────────────────────────────────────────
-// parse_mientras — emite control de flujo IR + AST
-// Stack layout (80 bytes):
-//   [sp+0]  x30
-//   [sp+8]  xzr
-//   [sp+16] x23,x24
-//   [sp+32] x25,x26
-//   [sp+48] x27,x28
-//   [sp+64] local: while_node_idx
-//   [sp+72] local: body_count
-// ─────────────────────────────────────────────────────────────
 parse_mientras:
     stp     x30, xzr, [sp, #-80]!
     stp     x23, x24, [sp, #16]
@@ -679,9 +691,9 @@ parse_mientras:
     // labels
     ldr     x0, =next_label
     ldr     x1, [x0]
-    mov     x23, x1                     // label_start
+    mov     x23, x1
     add     x1, x1, #1
-    mov     x24, x1                     // label_end
+    mov     x24, x1
     add     x1, x1, #1
     str     x1, [x0]
 
@@ -693,14 +705,19 @@ parse_mientras:
     mov     x4, x23
     bl      ir_emit
 
-    // OP_LOAD condición
+    // OP_LOAD condición con índice real de slot
+    mov     x0, x9
+    mov     x1, x10
+    bl      lookup_slot_index
+    mov     x26, x0                     // slot index
+
     ldr     x1, =next_vreg
     ldr     x2, [x1]
     mov     w0, #OP_LOAD
     mov     w1, w2
     mov     w2, #0
     mov     w3, #0
-    mov     x4, #0
+    mov     x4, x26                     // imm = slot index real
     bl      ir_emit
     ldr     x1, =next_vreg
     ldr     x2, [x1]
@@ -731,8 +748,8 @@ parse_mientras:
     mov     w3, w10
     mov     x4, #0
     bl      append_node
-    str     x0, [sp, #64]               // while_node_idx
-    str     xzr, [sp, #72]              // body_count
+    str     x0, [sp, #64]
+    str     xzr, [sp, #72]
 
     bl      peek_type
     cmp     w0, #TOKEN_LBRACE
@@ -770,7 +787,6 @@ parse_mientras:
     b.ne    6f
     bl      advance_token
 6:
-    // OP_JMP start
     mov     w0, #OP_JMP
     mov     w1, #0
     mov     w2, #0
@@ -778,7 +794,6 @@ parse_mientras:
     mov     x4, x23
     bl      ir_emit
 
-    // OP_LABEL end
     mov     w0, #OP_LABEL
     mov     w1, #0
     mov     w2, #0
@@ -786,7 +801,6 @@ parse_mientras:
     mov     x4, x24
     bl      ir_emit
 
-    // actualizar body_count
     ldr     x0, [sp, #64]
     lsl     x0, x0, #5
     add     x0, x21, x0

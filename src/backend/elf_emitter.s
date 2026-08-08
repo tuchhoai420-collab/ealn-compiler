@@ -5,6 +5,16 @@
 .equ AST_ASSIGN,   101
 .equ AST_WHILE,    102
 
+// IR opcodes
+.equ OP_CONST,   1
+.equ OP_LOAD,    2
+.equ OP_STORE,   3
+.equ OP_ADD,     4
+.equ OP_SUB,     5
+.equ OP_MUL,     6
+.equ OP_DIV,     7
+.equ OP_NEG,     8
+
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
@@ -93,7 +103,6 @@ emitir_cmp0:
     str     w2, [x20], #4
     ret
 
-// write B.EQ at [x1] with imm19 in w0 (does not advance x20)
 patch_beq:
     movz    w3, #0xFFFF
     movk    w3, #0x7, lsl #16
@@ -105,14 +114,12 @@ patch_beq:
     str     w2, [x1]
     ret
 
-// emit B.EQ placeholder (imm19=0), return addr in x0 via keeping x20-4
 emitir_beq_placeholder:
     movz    w2, #0
     movk    w2, #0x5400, lsl #16
     str     w2, [x20], #4
     ret
 
-// B imm26 in w0 (signed)
 emitir_b:
     movz    w3, #0xFFFF
     movk    w3, #0x3FF, lsl #16
@@ -161,6 +168,35 @@ find_reg_by_name:
     ldp     x30, xzr, [sp], #32
     ret
 
+// ─────────────────────────────────────────────────────────────
+// Recorrido del IR (por ahora solo presencia, sin emisión)
+// Más adelante aquí se emitirán MOVZ/ADD/SUB desde el IR.
+// ─────────────────────────────────────────────────────────────
+recorrer_ir:
+    stp     x29, x30, [sp, #-16]!
+    ldr     x0, =ir_buffer_ptr
+    ldr     x0, [x0]
+    cbz     x0, ir_fin
+    ldr     x1, =ir_instr_count
+    ldr     x1, [x1]
+    cbz     x1, ir_fin
+
+    // x0 = base del IR, x1 = cantidad
+    // Por ahora solo recorremos sin emitir.
+    // Próximo paso: emitir OP_CONST → MOVZ
+    mov     x2, #0
+ir_loop:
+    cmp     x2, x1
+    b.ge    ir_fin
+    // cada instr = 8 bytes
+    // (vacío por ahora)
+    add     x2, x2, #1
+    b       ir_loop
+
+ir_fin:
+    ldp     x29, x30, [sp], #16
+    ret
+
 emitir_elf:
     stp     x19, x20, [sp, #-96]!
     stp     x21, x22, [sp, #16]
@@ -190,7 +226,7 @@ emitir_elf:
 
 gen_loop:
     cmp     x23, x22
-    b.ge    epilogo
+    b.ge    despues_ast
     mov     x0, x23
     lsl     x0, x0, #5
     add     x0, x21, x0
@@ -242,10 +278,7 @@ da_add:
     bl      emitir_add_imm
     b       next
 
-// ── WHILE ──────────────────────────────────────────────
-// layout: WHILE node, then body_count following nodes
 do_while:
-    // x26 = body_count (callee-saved, safe across bl)
     ldr     w26, [x0, #4]
     ldr     w2, [x0, #8]
     ldr     w3, [x0, #12]
@@ -254,20 +287,14 @@ do_while:
     bl      find_reg_by_name
     cmp     w0, #0xFF
     b.eq    skip_wb
-    mov     w25, w0                 // cond reg (callee-saved)
+    mov     w25, w0
 
-    // loop_start = address of CMP
     mov     x27, x20
-
-    // CMP cond, #0
     mov     w0, w25
     bl      emitir_cmp0
-
-    // B.EQ end placeholder; save its address in x28
     mov     x28, x20
     bl      emitir_beq_placeholder
 
-    // body nodes
     add     x23, x23, #1
 blp:
     cbz     w26, bld
@@ -279,14 +306,12 @@ blp:
     ldr     w1, [x0]
     cmp     w1, #AST_ASSIGN
     b.ne    bln
-    // emit assign inside loop
-    ldr     w7, [x0, #4]            // op
+    ldr     w7, [x0, #4]
     ldr     w2, [x0, #8]
     ldr     w3, [x0, #12]
     ldr     x4, [x0, #16]
     mov     x0, x2
     mov     x1, x3
-    // save op across bl
     str     w7, [sp, #-16]!
     str     x4, [sp, #8]
     bl      find_reg_by_name
@@ -308,18 +333,13 @@ bln:
     b       blp
 
 bld:
-    // B loop_start
     sub     x0, x27, x20
     asr     x0, x0, #2
     bl      emitir_b
-
-    // patch B.EQ: offset = (end - beq_insn) / 4
     sub     x0, x20, x28
     asr     x0, x0, #2
     mov     x1, x28
     bl      patch_beq
-
-    // x23 already past body
     b       gen_loop
 
 skip_wb:
@@ -339,6 +359,11 @@ fallback:
     mov     w0, #0
     mov     w1, #0
     bl      emitir_movz_xN
+
+despues_ast:
+    // Aquí el AST ya generó el código clásico.
+    // Ahora recorremos el IR (todavía sin emitir).
+    bl      recorrer_ir
 
 epilogo:
     mov     w0, #93

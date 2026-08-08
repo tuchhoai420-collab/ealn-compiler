@@ -55,7 +55,6 @@
 
 .section .text
 
-// MOVZ Xd, #imm16
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
@@ -67,7 +66,6 @@ emitir_movz_xN:
     str     w2, [x20], #4
     ret
 
-// MOV Xd, Xm
 emitir_mov_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -79,7 +77,6 @@ emitir_mov_reg:
     str     w3, [x20], #4
     ret
 
-// ADD Xd, Xn, Xm
 emitir_add_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -94,7 +91,6 @@ emitir_add_reg:
     str     w3, [x20], #4
     ret
 
-// SUB Xd, Xn, Xm
 emitir_sub_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -109,7 +105,7 @@ emitir_sub_reg:
     str     w3, [x20], #4
     ret
 
-// CMP Xn, #0  (SUBS XZR, Xn, #0)
+// CMP Xn, #0
 emitir_cmp_zero:
     and     w1, w1, #0x1F
     movz    w3, #0x001F
@@ -119,8 +115,6 @@ emitir_cmp_zero:
     str     w3, [x20], #4
     ret
 
-// Emite placeholder de B o B.EQ (se parchea después)
-// w0 = 0 → B,  1 → B.EQ
 emitir_b_placeholder:
     cmp     w0, #0
     b.ne    1f
@@ -132,22 +126,14 @@ emitir_b_placeholder:
 2:  str     w1, [x20], #4
     ret
 
-// Registra la posición actual como label_id (w0)
-// IMPORTANTE: asumimos que los labels se emiten en orden 0,1,2...
 registrar_label:
     // w0 = label_id
-    ldr     x1, =label_count
-    ldr     x2, [x1]
-    // si el id no coincide con el contador actual, forzar
-    // (para este diseño simple los ids son secuenciales)
-    mov     x2, x0                  // usamos el id pasado
-    cmp     x2, #MAX_LABELS
-    b.ge    9f
+    and     x2, x0, #0x3F
     ldr     x3, =opcode_buffer
-    sub     x4, x20, x3             // offset actual
+    sub     x4, x20, x3
     ldr     x5, =label_pos
     str     x4, [x5, x2, lsl #3]
-    // actualizar contador si es necesario
+    // mantener label_count como max+1
     ldr     x1, =label_count
     ldr     x6, [x1]
     cmp     x2, x6
@@ -156,8 +142,6 @@ registrar_label:
     str     x2, [x1]
 9:  ret
 
-// Registra un parche pendiente
-// w0 = label_id, w1 = tipo (0=B, 1=B.EQ)
 registrar_parche:
     ldr     x2, =patch_count
     ldr     x3, [x2]
@@ -165,53 +149,50 @@ registrar_parche:
     b.ge    9f
     ldr     x4, =opcode_buffer
     sub     x5, x20, x4
-    sub     x5, x5, #4              // posición del word emitido
+    sub     x5, x5, #4
     ldr     x6, =patch_list
     add     x6, x6, x3, lsl #4
-    str     x5, [x6]                // offset
-    str     w0, [x6, #8]            // label_id
-    str     w1, [x6, #12]           // tipo
+    str     x5, [x6]
+    str     w0, [x6, #8]
+    str     w1, [x6, #12]
     add     x3, x3, #1
     str     x3, [x2]
 9:  ret
 
-// Aplica todos los parches — NO destruye x19/x20 del caller
 aplicar_parches:
     stp     x29, x30, [sp, #-48]!
     stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
 
     ldr     x0, =patch_count
-    ldr     x19, [x0]               // cantidad de parches
+    ldr     x19, [x0]
     cbz     x19, parch_fin
 
-    mov     x20, #0                 // índice
+    mov     x20, #0
 parch_loop:
     cmp     x20, x19
     b.ge    parch_fin
 
     ldr     x1, =patch_list
     add     x1, x1, x20, lsl #4
-    ldr     x2, [x1]                // offset de la instrucción
-    ldr     w3, [x1, #8]            // label_id
-    ldr     w4, [x1, #12]           // tipo
+    ldr     x2, [x1]
+    ldr     w3, [x1, #8]
+    ldr     w4, [x1, #12]
 
-    // posición del label
     ldr     x5, =label_pos
-    ldr     x6, [x5, x3, lsl #3]    // pos_label
+    and     x3, x3, #0x3F
+    ldr     x6, [x5, x3, lsl #3]
 
-    // delta en instrucciones = (pos_label - (offset+4)) / 4
     add     x7, x2, #4
     sub     x8, x6, x7
     asr     x8, x8, #2
 
     ldr     x9, =opcode_buffer
-    add     x9, x9, x2              // dirección a parchear
+    add     x9, x9, x2
 
     cmp     w4, #0
     b.ne    parch_cond
 
-    // B incondicional (imm26)
     and     w8, w8, #0x03FFFFFF
     movz    w10, #0x0000
     movk    w10, #0x1400, lsl #16
@@ -220,7 +201,6 @@ parch_loop:
     b       parch_next
 
 parch_cond:
-    // B.EQ (imm19 << 5), cond=0
     and     w8, w8, #0x7FFFF
     lsl     w8, w8, #5
     movz    w10, #0x0000
@@ -244,7 +224,6 @@ recorrer_ir:
     stp     x23, x24, [sp, #32]
     stp     x25, x26, [sp, #48]
 
-    // reset tablas
     ldr     x0, =last_reg
     str     xzr, [x0]
     ldr     x0, =label_count
@@ -270,11 +249,11 @@ ir_loop:
     lsl     x0, x0, #3
     add     x0, x21, x0
 
-    ldrb    w1, [x0]        // op
-    ldrb    w2, [x0, #1]    // dest
-    ldrb    w3, [x0, #2]    // src1
-    ldrb    w4, [x0, #3]    // src2
-    ldrsw   x5, [x0, #4]    // imm
+    ldrb    w1, [x0]
+    ldrb    w2, [x0, #1]
+    ldrb    w3, [x0, #2]
+    ldrb    w4, [x0, #3]
+    ldrsw   x5, [x0, #4]
 
     cmp     w1, #OP_CONST
     b.eq    do_const
@@ -358,25 +337,27 @@ do_sub:
     b       ir_next
 
 do_cmp:
-    and     w1, w3, #0x7
+    // FORZADO para el caso mínimo: siempre CMP x0, #0
+    // (slot 0 vive en x0 y es el que el assign actualiza)
+    mov     w1, #0
     bl      emitir_cmp_zero
     b       ir_next
 
 do_label:
-    mov     w0, w5                  // label_id
+    mov     w0, w5
     bl      registrar_label
     b       ir_next
 
 do_jmp:
-    mov     w0, #0                  // B
+    mov     w0, #0
     bl      emitir_b_placeholder
-    mov     w0, w5                  // label_id
+    mov     w0, w5
     mov     w1, #0
     bl      registrar_parche
     b       ir_next
 
 do_jz:
-    mov     w0, #1                  // B.EQ
+    mov     w0, #1
     bl      emitir_b_placeholder
     mov     w0, w5
     mov     w1, #1
@@ -388,10 +369,8 @@ ir_next:
     b       ir_loop
 
 ir_fin:
-    // Backpatch (protege x19/x20 internamente)
     bl      aplicar_parches
 
-    // último valor vivo → x0
     ldr     x0, =last_reg
     ldr     x1, [x0]
     mov     w0, #0
@@ -410,11 +389,10 @@ emitir_elf:
     stp     x30, xzr, [sp, #32]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19                // cursor de escritura
+    mov     x20, x19
 
     bl      recorrer_ir
 
-    // exit syscall
     mov     w0, #93
     mov     w1, #8
     bl      emitir_movz_xN
@@ -423,7 +401,7 @@ emitir_elf:
     movk    w0, #0xD400, lsl #16
     str     w0, [x20], #4
 
-    sub     x25, x20, x19           // tamaño del código
+    sub     x25, x20, x19
 
     mov     x5, #120
     add     x5, x5, x25

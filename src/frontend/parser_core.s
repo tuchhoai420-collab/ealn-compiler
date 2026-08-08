@@ -6,6 +6,9 @@
 .equ AST_NODE_SIZE, 32
 .equ MAX_AST_NODES, 512
 
+.equ SLOT_SIZE,     32
+.equ MAX_SLOTS,     256
+
 .equ TOKEN_EOF,      0
 .equ TOKEN_SEA,      1
 .equ TOKEN_FIJO,     2
@@ -25,6 +28,8 @@
     ast_root_ptr:   .skip 8
     ast_node_count: .skip 8
     expr_tok_idx:   .skip 8
+    slot_table_ptr: .skip 8
+    slot_count:     .skip 8
 
 .section .text
 
@@ -42,6 +47,84 @@ parsear_numero_token:
     sub     x1, x1, #1
     b       1b
 2:  ret
+
+compar_nombres:
+    cmp     x1, x3
+    b.ne    9f
+    ldr     x4, =fuente_ptr
+    ldr     x4, [x4]
+    add     x0, x4, x0
+    add     x2, x4, x2
+1:  cbz     x1, 8f
+    ldrb    w5, [x0], #1
+    ldrb    w6, [x2], #1
+    cmp     w5, w6
+    b.ne    9f
+    sub     x1, x1, #1
+    b       1b
+8:  mov     w0, #1
+    ret
+9:  mov     w0, #0
+    ret
+
+lookup_slot:
+    stp     x30, x21, [sp, #-48]!
+    stp     x22, x23, [sp, #16]
+    stp     x24, x25, [sp, #32]
+    mov     x22, x0
+    mov     x23, x1
+    ldr     x21, =slot_table_ptr
+    ldr     x21, [x21]
+    cbz     x21, 7f
+    ldr     x24, =slot_count
+    ldr     x24, [x24]
+    mov     x25, #0
+1:  cmp     x25, x24
+    b.ge    7f
+    mov     x0, x25
+    lsl     x0, x0, #5
+    add     x25, x25, #1
+    add     x0, x21, x0
+    ldr     w2, [x0]
+    ldr     w3, [x0, #4]
+    mov     x0, x22
+    mov     x1, x23
+    bl      compar_nombres
+    cbz     w0, 1b
+    sub     x25, x25, #1
+    mov     x0, x25
+    lsl     x0, x0, #5
+    add     x0, x21, x0
+    ldr     x0, [x0, #16]
+    ldp     x24, x25, [sp, #32]
+    ldp     x22, x23, [sp, #16]
+    ldp     x30, x21, [sp], #48
+    ret
+7:  mov     x0, #0
+    ldp     x24, x25, [sp, #32]
+    ldp     x22, x23, [sp, #16]
+    ldp     x30, x21, [sp], #48
+    ret
+
+register_slot:
+    ldr     x4, =slot_table_ptr
+    ldr     x4, [x4]
+    cbz     x4, 9f
+    ldr     x5, =slot_count
+    ldr     x6, [x5]
+    cmp     x6, #MAX_SLOTS
+    b.ge    9f
+    mov     x7, x6
+    lsl     x7, x7, #5
+    add     x7, x4, x7
+    str     w0, [x7]
+    str     w1, [x7, #4]
+    str     w2, [x7, #8]
+    str     wzr, [x7, #12]
+    str     x3, [x7, #16]
+    add     x6, x6, #1
+    str     x6, [x5]
+9:  ret
 
 peek_type:
     ldr     x0, =expr_tok_idx
@@ -73,11 +156,24 @@ current_number_value:
     mov     x1, x2
     b       parsear_numero_token
 
+current_ident_span:
+    ldr     x0, =expr_tok_idx
+    ldr     x0, [x0]
+    lsl     x0, x0, #4
+    add     x0, x19, x0
+    ldr     w1, [x0, #4]
+    ldr     w2, [x0, #8]
+    mov     x0, x1
+    mov     x1, x2
+    ret
+
 parse_factor:
     stp     x30, xzr, [sp, #-16]!
     bl      peek_type
     cmp     w0, #TOKEN_NUMBER
     b.eq    10f
+    cmp     w0, #TOKEN_IDENT
+    b.eq    15f
     cmp     w0, #TOKEN_LPAREN
     b.eq    20f
     cmp     w0, #TOKEN_MINUS
@@ -85,14 +181,19 @@ parse_factor:
     mov     x0, #0
     ldp     x30, xzr, [sp], #16
     ret
-
 10: bl      current_number_value
     str     x0, [sp, #8]
     bl      advance_token
     ldr     x0, [sp, #8]
     ldp     x30, xzr, [sp], #16
     ret
-
+15: bl      current_ident_span
+    bl      lookup_slot
+    str     x0, [sp, #8]
+    bl      advance_token
+    ldr     x0, [sp, #8]
+    ldp     x30, xzr, [sp], #16
+    ret
 20: bl      advance_token
     bl      parse_expr
     str     x0, [sp, #8]
@@ -103,7 +204,6 @@ parse_factor:
 21: ldr     x0, [sp, #8]
     ldp     x30, xzr, [sp], #16
     ret
-
 30: bl      advance_token
     bl      parse_factor
     neg     x0, x0
@@ -114,7 +214,6 @@ parse_term:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_factor
     str     x0, [sp, #16]
-
 40: bl      peek_type
     cmp     w0, #TOKEN_STAR
     b.eq    41f
@@ -123,14 +222,12 @@ parse_term:
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-
 41: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
     mul     x0, x1, x0
     str     x0, [sp, #16]
     b       40b
-
 42: bl      advance_token
     bl      parse_factor
     ldr     x1, [sp, #16]
@@ -142,7 +239,6 @@ parse_expr:
     stp     x30, xzr, [sp, #-32]!
     bl      parse_term
     str     x0, [sp, #16]
-
 50: bl      peek_type
     cmp     w0, #TOKEN_PLUS
     b.eq    51f
@@ -151,14 +247,12 @@ parse_expr:
     ldr     x0, [sp, #16]
     ldp     x30, xzr, [sp], #32
     ret
-
 51: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
     add     x0, x1, x0
     str     x0, [sp, #16]
     b       50b
-
 52: bl      advance_token
     bl      parse_term
     ldr     x1, [sp, #16]
@@ -180,6 +274,13 @@ iniciar_parser:
     cbz     x19, parser_vacio
     cbz     x20, parser_vacio
 
+    mov     x0, #(MAX_SLOTS * SLOT_SIZE)
+    bl      alloc_arena
+    ldr     x1, =slot_table_ptr
+    str     x0, [x1]
+    ldr     x1, =slot_count
+    str     xzr, [x1]
+
     mov     x0, #(MAX_AST_NODES * AST_NODE_SIZE)
     bl      alloc_arena
     ldr     x1, =ast_root_ptr
@@ -191,12 +292,10 @@ iniciar_parser:
 parser_loop:
     cmp     x23, x20
     b.ge    parser_fin
-
     mov     x0, x23
     lsl     x0, x0, #4
     add     x0, x19, x0
     ldr     w24, [x0]
-
     cmp     w24, #TOKEN_EOF
     b.eq    parser_fin
     cmp     w24, #TOKEN_SEA
@@ -208,7 +307,6 @@ parser_loop:
 
 es_decl:
     mov     w27, w24
-
     add     x23, x23, #1
     cmp     x23, x20
     b.ge    parser_fin
@@ -222,7 +320,6 @@ es_decl:
     b.ne    error_sintaxis
     mov     w9, w25
     mov     w10, w26
-
     add     x23, x23, #1
     cmp     x23, x20
     b.ge    parser_fin
@@ -232,7 +329,6 @@ es_decl:
     ldr     w24, [x0]
     cmp     w24, #TOKEN_ASSIGN
     b.ne    error_sintaxis
-
     add     x23, x23, #1
     ldr     x0, =expr_tok_idx
     str     x23, [x0]
@@ -240,18 +336,20 @@ es_decl:
     mov     x11, x0
     ldr     x0, =expr_tok_idx
     ldr     x23, [x0]
-
     cmp     x23, x20
-    b.ge    crear_nodo
+    b.ge    1f
     mov     x0, x23
     lsl     x0, x0, #4
     add     x0, x19, x0
     ldr     w24, [x0]
     cmp     w24, #TOKEN_SEMI
-    b.ne    crear_nodo
+    b.ne    1f
     add     x23, x23, #1
-
-crear_nodo:
+1:  mov     w0, w9
+    mov     w1, w10
+    mov     w2, w27
+    mov     x3, x11
+    bl      register_slot
     cmp     x22, #MAX_AST_NODES
     b.ge    parser_fin
     mov     x0, x22

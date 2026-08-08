@@ -8,6 +8,9 @@ _start:
     // 1. Inicializar Arena de memoria masiva
     bl      init_arena
 
+    // 1b. Inicializar buffer de IR denso
+    bl      ir_init
+
     // 2. Mapear archivo fuente por Zero-Copy
     ldr     x1, =archivo
     bl      map_file_zero_copy

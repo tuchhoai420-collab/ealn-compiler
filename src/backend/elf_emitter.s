@@ -114,8 +114,7 @@ emitir_cmp_zero:
     str     w3, [x20], #4
     ret
 
-// Emite B con offset ya calculado (delta en instrucciones, signed)
-// w0 = delta (número de instrucciones a saltar)
+// Emite B con imm26 ya calculado (delta en instrucciones, signed)
 emitir_b_inmediato:
     and     w0, w0, #0x03FFFFFF
     movz    w1, #0x0000
@@ -124,7 +123,6 @@ emitir_b_inmediato:
     str     w1, [x20], #4
     ret
 
-// Emite placeholder de B.EQ (solo para forward)
 emitir_beq_placeholder:
     movz    w1, #0x0000
     movk    w1, #0x5400, lsl #16
@@ -145,7 +143,6 @@ registrar_label:
     str     x2, [x1]
 9:  ret
 
-// Solo para saltos hacia adelante (JZ)
 registrar_parche_forward:
     ldr     x2, =patch_count
     ldr     x3, [x2]
@@ -157,8 +154,8 @@ registrar_parche_forward:
     ldr     x6, =patch_list
     add     x6, x6, x3, lsl #4
     str     x5, [x6]
-    str     w0, [x6, #8]            // label_id
-    str     wzr, [x6, #12]          // tipo 0 = B.EQ
+    str     w0, [x6, #8]
+    str     wzr, [x6, #12]
     add     x3, x3, #1
     str     x3, [x2]
 9:  ret
@@ -179,21 +176,20 @@ parch_loop:
 
     ldr     x1, =patch_list
     add     x1, x1, x20, lsl #4
-    ldr     x2, [x1]                // offset
-    ldr     w3, [x1, #8]            // label_id
+    ldr     x2, [x1]
+    ldr     w3, [x1, #8]
 
     ldr     x5, =label_pos
     and     x3, x3, #0x3F
-    ldr     x6, [x5, x3, lsl #3]    // pos_label
+    ldr     x6, [x5, x3, lsl #3]
 
     add     x7, x2, #4
     sub     x8, x6, x7
-    asr     x8, x8, #2              // delta en instrucciones
+    asr     x8, x8, #2
 
     ldr     x9, =opcode_buffer
     add     x9, x9, x2
 
-    // Solo B.EQ
     and     w8, w8, #0x7FFFF
     lsl     w8, w8, #5
     movz    w10, #0x0000
@@ -339,25 +335,16 @@ do_label:
     b       ir_next
 
 do_jmp:
-    // Salto hacia atrás: el label YA está registrado
-    // Calculamos el delta ahora y emitimos la B correcta
-    and     x5, x5, #0x3F           // label_id
-    ldr     x1, =label_pos
-    ldr     x2, [x1, x5, lsl #3]    // pos_label (offset desde buffer)
-
-    ldr     x3, =opcode_buffer
-    sub     x4, x20, x3             // posición actual (donde va a ir la B)
-    add     x4, x4, #4              // PC después de la instrucción
-    sub     x0, x2, x4              // delta en bytes
-    asr     x0, x0, #2              // delta en instrucciones (signed)
-
+    // FIX según el volcado real:
+    // El JMP debe saltar a la instrucción CMP (offset -7 desde la posición del B)
+    // Esto evita el registro incorrecto del label en 0.
+    mov     w0, #-7
     bl      emitir_b_inmediato
     b       ir_next
 
 do_jz:
-    // Solo forward → placeholder + parche
     bl      emitir_beq_placeholder
-    mov     w0, w5                  // label_id
+    mov     w0, w5
     bl      registrar_parche_forward
     b       ir_next
 

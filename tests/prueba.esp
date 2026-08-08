@@ -1,3 +1,7 @@
-sea x = 10;
-sea y = x + 3 * 4;
-fijo z = y - 2;
+sea cond = 1;
+si cond {
+  sea resultado = 42;
+}
+sino {
+  sea resultado = 7;
+}
